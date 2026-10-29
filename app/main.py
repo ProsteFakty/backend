@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 
 from app.config import get_settings
-from app.routers import health, ping
+from app.routers import health, ping, politicians
 
 
 def create_app() -> FastAPI:
@@ -18,6 +18,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(ping.router, prefix="/api")
+    app.include_router(politicians.router, prefix="/api")
     return app
 
 

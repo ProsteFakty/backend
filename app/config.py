@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     database_url: str = ""
     qdrant_url: str = "http://qdrant:6333"
     gemini_api_key: str = ""
+    sejm_term: int = 10
+    # ONNX face models are downloaded here on first use (gitignored, survives via the bind mount).
+    models_dir: str = "models"
+    # SFace cosine similarity; 0.363 is the threshold recommended by the model authors.
+    face_match_threshold: float = 0.363
 
     @property
     def is_local(self) -> bool:
