@@ -1,0 +1,5 @@
+# No domain yet: plain HTTP on the server IP.
+# Once we have a domain, replace ":80" with e.g. "api.example.pl" and Caddy enables HTTPS automatically.
+:80 {
+	reverse_proxy backend:8000
+}
