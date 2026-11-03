@@ -1,4 +1,7 @@
-"""Politician face index in Qdrant, built from MP photos in the Sejm API (api.sejm.gov.pl)."""
+"""MPs from the Sejm API (api.sejm.gov.pl): name search + the face index in Qdrant built from their photos."""
+import threading
+import time
+import unicodedata
 from functools import lru_cache
 
 import httpx
@@ -9,6 +12,8 @@ from app.services.faces import EMBEDDING_DIM
 
 SEJM_API = "https://api.sejm.gov.pl/sejm"
 COLLECTION = "politician_faces"
+# The MP list barely changes; refetching it per search would make us depend on a slow API for every keystroke.
+MP_LIST_TTL_SECONDS = 6 * 3600
 
 
 class Politician(BaseModel):
@@ -60,9 +65,59 @@ class Politician(BaseModel):
         return self.term * 1000 + self.mp_id
 
 
+class PoliticianSummary(BaseModel):
+    """Search result row; the full profile is GET /api/politicians/{mp_id}."""
+
+    mp_id: int
+    full_name: str
+    club: str | None
+    active: bool
+    photo_url: str
+
+
 class Match(BaseModel):
     politician: Politician
     similarity: float
+
+
+_mps_lock = threading.Lock()
+_mps: list[Politician] = []
+_mps_fetched_at = 0.0
+
+
+def list_politicians() -> list[Politician]:
+    """All MPs of the current term (including expired mandates), cached in memory."""
+    global _mps, _mps_fetched_at
+    with _mps_lock:
+        if not _mps or time.monotonic() - _mps_fetched_at > MP_LIST_TTL_SECONDS:
+            term = get_settings().sejm_term
+            r = httpx.get(f"{SEJM_API}/term{term}/MP", timeout=30)
+            r.raise_for_status()
+            _mps = [Politician.from_sejm(mp, term) for mp in r.json()]
+            _mps_fetched_at = time.monotonic()
+        return _mps
+
+
+def get_politician(mp_id: int) -> Politician | None:
+    return next((p for p in list_politicians() if p.mp_id == mp_id), None)
+
+
+def _fold(text: str) -> str:
+    # "Łódź" -> "lodz", so users can type without Polish characters. "ł" has no Unicode decomposition.
+    text = unicodedata.normalize("NFKD", text.casefold().replace("ł", "l"))
+    return "".join(c for c in text if not unicodedata.combining(c))
+
+
+def search_politicians(query: str, limit: int) -> list[Politician]:
+    """Every word of the query must start a word of the MP's name; last-name hits first, then alphabetically."""
+    words = _fold(query).split()
+    hits = []
+    for p in list_politicians():
+        name_words = _fold(p.full_name).split()
+        if words and all(any(n.startswith(w) for n in name_words) for w in words):
+            hits.append(p)
+    hits.sort(key=lambda p: (not _fold(p.last_name).startswith(words[0]), _fold(p.last_name), _fold(p.first_name)))
+    return hits[:limit]
 
 
 @lru_cache

@@ -82,3 +82,40 @@ def test_no_match_below_threshold(client, monkeypatch):
 def test_no_faces(client, monkeypatch):
     monkeypatch.setattr(router, "get_engine", lambda: FakeEngine([]))
     assert post(client, jpeg()).json() == {"faces": []}
+
+
+MPS = [
+    Politician.from_sejm(MP, 10),
+    Politician.from_sejm({**MP, "id": 2, "firstName": "Adam", "lastName": "Łęcki", "firstLastName": "Adam Łęcki"}, 10),
+    Politician.from_sejm({**MP, "id": 3, "firstName": "Jan", "lastName": "Kowalski", "firstLastName": "Jan Kowalski"}, 10),
+]
+
+
+@pytest.fixture
+def mps(monkeypatch):
+    monkeypatch.setattr("app.services.politicians.list_politicians", lambda: MPS)
+
+
+def test_search_last_name_hits_first(client, mps):
+    body = client.get("/api/politicians/search", params={"q": "adam"}).json()
+    assert [p["full_name"] for p in body] == ["Andrzej Adamczyk", "Adam Łęcki"]
+    assert set(body[0]) == {"mp_id", "full_name", "club", "active", "photo_url"}
+
+
+def test_search_without_polish_characters(client, mps):
+    body = client.get("/api/politicians/search", params={"q": "lecki"}).json()
+    assert [p["mp_id"] for p in body] == [2]
+
+
+def test_search_all_words_must_match(client, mps):
+    assert client.get("/api/politicians/search", params={"q": "jan kow"}).json()[0]["mp_id"] == 3
+    assert client.get("/api/politicians/search", params={"q": "jan adam"}).json() == []
+
+
+def test_search_query_too_short(client, mps):
+    assert client.get("/api/politicians/search", params={"q": "a"}).status_code == 422
+
+
+def test_profile(client, mps):
+    assert client.get("/api/politicians/3").json()["full_name"] == "Jan Kowalski"
+    assert client.get("/api/politicians/999").status_code == 404

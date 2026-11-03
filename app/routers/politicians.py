@@ -1,9 +1,15 @@
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.services.faces import decode_image, get_engine
-from app.services.politicians import Politician, search_faces
+from app.services.politicians import (
+    Politician,
+    PoliticianSummary,
+    get_politician,
+    search_faces,
+    search_politicians,
+)
 
 router = APIRouter(prefix="/politicians", tags=["politicians"])
 
@@ -64,6 +70,31 @@ class RecognizeResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: str
+
+
+@router.get("/search", summary="Search MPs by name")
+def search(
+    q: str = Query(min_length=2, description="Name fragment(s), e.g. `adam`, `kowal jan`. Polish characters optional."),
+    limit: int = Query(20, ge=1, le=100),
+) -> list[PoliticianSummary]:
+    """Matches word prefixes of first and last name; MPs whose last name starts with the query come first.
+
+    Open a result with `GET /api/politicians/{mp_id}`.
+    """
+    return [PoliticianSummary(**p.model_dump()) for p in search_politicians(q, limit)]
+
+
+@router.get(
+    "/{mp_id}",
+    summary="MP profile",
+    responses={404: {"model": ErrorResponse, "description": "No MP with this id in the current term."}},
+)
+def profile(mp_id: int) -> Politician:
+    """Same object as `politician` in the camera scan response."""
+    politician = get_politician(mp_id)
+    if politician is None:
+        raise HTTPException(404, "MP not found")
+    return politician
 
 
 @router.post(
