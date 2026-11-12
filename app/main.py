@@ -8,8 +8,9 @@ from fastapi import FastAPI
 from app.config import get_settings
 from app.db.models import Base
 from app.db.session import get_engine
-from app.routers import articles, health, ping, politicians, sittings
+from app.routers import articles, health, mps, ping, politicians, sittings
 from app.services import articles as articles_service
+from app.services import mp_votes as mp_votes_service
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         logger.exception("Could not create database tables")
     # Load the embedding model in the background so the first article search does not wait for it.
     warm_up = asyncio.create_task(asyncio.to_thread(articles_service.warm_up))
+    # Pull individual MP votes of the term, so GET /api/v1/mps/{id}/votes does not wait for it.
+    mp_votes_service.start_backfill(get_settings().sejm_term)
     yield
     warm_up.cancel()
 
@@ -46,6 +49,7 @@ def create_app() -> FastAPI:
     app.include_router(politicians.router)
     app.include_router(sittings.router)
     app.include_router(articles.router)
+    app.include_router(mps.router)
     return app
 
 

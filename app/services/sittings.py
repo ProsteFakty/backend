@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.models import Bill, Sitting, Voting, VotingClubResult
+from app.db.models import Bill, MpVote, Sitting, Voting, VotingClubResult
 from app.schemas.sittings import BillOut, ClubVotes, Page, SittingDetail, SittingListItem, Votes
 from app.services.sejm_client import SejmClient
 from app.utils.gemini_client import GeminiError, get_gemini_client, retry_after
@@ -41,6 +41,7 @@ _PRINT = re.compile(r"druk(?:i|u|ów)?\s+(?:nr\s+)?(\d+)", re.IGNORECASE)
 _AGENDA_POINT = re.compile(r"^Pkt\.?\s*\d+\s*")
 BILL = "projekt ustawy"
 _VOTE_FIELDS = {"YES": "yes", "NO": "no", "ABSTAIN": "abstain"}
+_VOTE_VALUES = {"YES": "for", "NO": "against", "ABSTAIN": "abstained"}
 
 # One sync per sitting at a time (key 0 = the sitting list); enough for a single-process deployment.
 _locks: defaultdict[tuple[int, int], asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -59,6 +60,16 @@ def print_number(voting_title: str) -> str | None:
     """'Pkt. 2 Sprawozdanie ... (druki nr 876, 984 i 984-A)' -> '876' (the print that started the process)."""
     match = _PRINT.search(voting_title)
     return match[1] if match else None
+
+
+def is_final(topic: str | None, description: str | None) -> bool:
+    """Whether a voting is the vote on the whole document ("całość projektu"), not an amendment or motion."""
+    return "całość projektu" in (description or "") or "nad całością" in (topic or "")
+
+
+def vote_value(raw: str) -> str:
+    """Individual Sejm vote -> for / against / abstained / absent (ABSENT and anything unexpected)."""
+    return _VOTE_VALUES.get(raw, "absent")
 
 
 async def list_sittings(
@@ -187,14 +198,19 @@ async def _fill_descriptions(session: AsyncSession, sittings: Iterable[Sitting])
 
 
 def _votings_stale(sitting: Sitting) -> bool:
+    return is_stale(sitting, sitting.votings_synced_at)
+
+
+def is_stale(sitting: Sitting, synced_at: datetime | None) -> bool:
+    """Whether data of the sitting pulled at `synced_at` (None = never) should be pulled again."""
     now = datetime.now(UTC)
     if sitting.dates[0] > now.date():
         return False  # not started yet
-    if sitting.votings_synced_at is None:
+    if synced_at is None:
         return True
-    if sitting.votings_synced_at.date() > sitting.dates[-1]:
+    if synced_at.date() > sitting.dates[-1]:
         return False  # synced after the sitting ended
-    return now - sitting.votings_synced_at > LIVE_TTL
+    return now - synced_at > LIVE_TTL
 
 
 async def _sync_votings(session: AsyncSession, sejm: SejmClient, sitting: Sitting) -> None:
@@ -265,7 +281,7 @@ def _build_voting(sitting: Sitting, raw: dict[str, Any], bill: Bill | None) -> V
         title=raw["title"],
         topic=topic,
         description=description,
-        is_final="całość projektu" in (description or "") or "nad całością" in (topic or ""),
+        is_final=is_final(topic, description),
         yes=raw["yes"],
         no=raw["no"],
         abstain=raw["abstain"],
@@ -277,7 +293,14 @@ def _build_voting(sitting: Sitting, raw: dict[str, Any], bill: Bill | None) -> V
         for vote in raw.get("votes", []):
             per_club[vote["club"]][_VOTE_FIELDS.get(vote["vote"], "absent")] += 1
         voting.clubs = [VotingClubResult(club=club, **counts) for club, counts in per_club.items()]
+        if voting.is_final:
+            voting.mp_votes = build_mp_votes(raw)
     return voting
+
+
+def build_mp_votes(raw: dict[str, Any]) -> list[MpVote]:
+    """Individual votes of a voting detail from the Sejm API."""
+    return [MpVote(mp_id=v["MP"], club=v.get("club"), vote=vote_value(v["vote"])) for v in raw.get("votes", [])]
 
 
 async def _fill_summaries(session: AsyncSession, bills: Iterable[Bill]) -> None:
