@@ -1,10 +1,17 @@
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 
 class ArticleSearchRequest(BaseModel):
-    query: str = Field(min_length=2, max_length=500, description="User's question or description, in Polish")
+    query: str = Field(
+        min_length=2,
+        max_length=500,
+        description="User's question, a phrase from the law, or an article like 'art. 148 kk', in Polish",
+    )
+    limit: int | None = Field(None, ge=1, le=20, description="Max hits; default SEARCH_TOP_K")
+    act_key: str | None = Field(None, description="Search only this act (from GET /api/v1/acts)")
 
 
 class ArticleSearchHit(BaseModel):
@@ -12,8 +19,16 @@ class ArticleSearchHit(BaseModel):
     act_key: str
     act_title: str
     article_number: str
-    score: float = Field(description="Cosine similarity, 0-1; only hits above the threshold are returned")
-    summary_preview: str = Field(description="Beginning of the plain-language summary")
+    score: float = Field(
+        description="'reference': 1.0; 'semantic': cosine similarity 0-1 (only above the threshold); "
+        "'text': full-text rank, comparable only between text hits"
+    )
+    summary_preview: str = Field(description="Beginning of the plain-language summary (or of the text without one)")
+    match: Literal["reference", "semantic", "text"] = Field(
+        "semantic",
+        description="'reference': the query named this article ('art. 148 kk'); 'semantic': similar in meaning; "
+        "'text': the article's wording contains the query words",
+    )
 
 
 class ActInfo(BaseModel):

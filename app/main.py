@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from app.config import get_settings
 from app.db.models import Base
 from app.db.session import get_engine
-from app.routers import articles, health, ping, politicians, sittings
+from app.routers import acts, articles, health, ping, politicians, sittings
 from app.services import articles as articles_service
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(ping.router, prefix="/api")
     app.include_router(politicians.router)
     app.include_router(sittings.router)
+    app.include_router(acts.router)
     app.include_router(articles.router)
     return app
 

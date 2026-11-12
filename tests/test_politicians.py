@@ -7,7 +7,7 @@ from app.config import get_settings
 from app.main import create_app
 from app.routers import politicians as router
 from app.services.faces import Face
-from app.services.politicians import Match, Politician
+from app.services.politicians import Match, Politician, SejmUnavailableError
 
 MP = {
     "id": 1,
@@ -49,7 +49,7 @@ def face(box=(10, 20, 30, 40)) -> Face:
 
 def test_from_sejm_builds_links():
     p = Politician.from_sejm(MP, 10)
-    assert p.photo_url == "https://api.sejm.gov.pl/sejm/term10/MP/1/photo"
+    assert p.photo_url == "/api/v1/politicians/1/photo"
     assert p.profile_url == "https://www.sejm.gov.pl/Sejm10.nsf/posel.xsp?id=001&type=A"
     assert p.point_id == 10001
 
@@ -119,3 +119,57 @@ def test_search_query_too_short(client, mps):
 def test_profile(client, mps):
     assert client.get("/api/v1/politicians/3").json()["full_name"] == "Jan Kowalski"
     assert client.get("/api/v1/politicians/999").status_code == 404
+
+
+def test_photo_proxy(client, monkeypatch):
+    monkeypatch.setattr(router, "get_photo", lambda mp_id: b"\xff\xd8jpeg" if mp_id == 1 else None)
+
+    resp = client.get("/api/v1/politicians/1/photo")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/jpeg"
+    assert resp.content == b"\xff\xd8jpeg"
+    assert client.get("/api/v1/politicians/2/photo").status_code == 404
+
+
+def test_photo_url_points_to_our_backend(client, mps, monkeypatch):
+    expected = "http://testserver/api/v1/politicians/3/photo"
+    assert client.get("/api/v1/politicians/3").json()["photo_url"] == expected
+    assert client.get("/api/v1/politicians/search", params={"q": "kowal"}).json()[0]["photo_url"] == expected
+
+    # old face-index entries still carry the Sejm API URL
+    stale = MPS[2].model_copy(update={"photo_url": "https://api.sejm.gov.pl/sejm/term10/MP/3/photo"})
+    monkeypatch.setattr(router, "get_engine", lambda: FakeEngine([face()]))
+    monkeypatch.setattr(router, "search_faces", lambda e: [Match(politician=stale, similarity=0.7)])
+    assert post(client, jpeg()).json()["faces"][0]["politician"]["photo_url"] == expected
+
+
+def test_sejm_outage_is_503(client, monkeypatch):
+    def down(*args):
+        raise SejmUnavailableError("down")
+
+    monkeypatch.setattr(router, "get_photo", down)
+    monkeypatch.setattr(router, "get_politician", down)
+    monkeypatch.setattr(router, "search_politicians", down)
+
+    assert client.get("/api/v1/politicians/1/photo").status_code == 503
+    assert client.get("/api/v1/politicians/1").status_code == 503
+    assert client.get("/api/v1/politicians/search", params={"q": "kowal"}).status_code == 503
+
+
+def test_mp_list_falls_back_to_saved_copy(tmp_path, monkeypatch):
+    import httpx
+
+    from app.services import politicians as service
+
+    monkeypatch.setenv("SEJM_CACHE_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    monkeypatch.setattr(service, "_mps", [])
+
+    monkeypatch.setattr(service.httpx, "get", lambda *a, **k: httpx.Response(200, json=[MP], request=httpx.Request("GET", "x")))
+    assert [p.full_name for p in service.list_politicians()] == ["Andrzej Adamczyk"]
+
+    # API down after a restart (nothing in memory): the copy on disk is used
+    monkeypatch.setattr(service, "_mps", [])
+    monkeypatch.setattr(service.httpx, "get", lambda *a, **k: httpx.Response(503, request=httpx.Request("GET", "x")))
+    assert [p.full_name for p in service.list_politicians()] == ["Andrzej Adamczyk"]
+    get_settings.cache_clear()

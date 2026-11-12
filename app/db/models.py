@@ -38,7 +38,8 @@ class Article(Base):
     position: Mapped[int] = mapped_column(Integer)  # order within the act
     text: Mapped[str] = mapped_column(Text)
     summary: Mapped[str | None] = mapped_column(Text)
-    # References found by the LLM, with resolution result: [{"act_key", "article", "resolved"}]
+    # Articles this one refers to, found by app.pipeline.references:
+    # [{"slug": target article slug, "same_act": bool, "text": the mention, e.g. "art. 143 § 1 lub w art. 144"}]
     references: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
 
     act: Mapped[Act] = relationship(back_populates="articles")

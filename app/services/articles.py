@@ -1,18 +1,133 @@
-"""Articles read model: semantic search in Qdrant (act_articles), full article data from Postgres."""
+"""Articles read model: search (article reference, semantic in Qdrant, full text in Postgres) and full article data."""
 
+import asyncio
 import logging
+import re
 
-from sqlalchemy import select
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.db.articles import find_article_by_slug
-from app.db.models import Article
+from app.db.models import Act, Article
+from app.pipeline.act_keys import normalize_article_number, slugify
+from app.pipeline.key_acts import KEY_ACTS, KeyAct
 from app.schemas.articles import ActInfo, ArticleDetail, ArticleReference, ArticleSearchHit
 from app.vectorstore.collections import ActArticleChunk
 
 logger = logging.getLogger(__name__)
 
 PREVIEW_CHARS = 200
+
+# "art. 148 kk", "Art. 22[1] § 1 Kodeksu pracy", "artykuł 30 ust. 1 pkt 2 ustawy o pit", "art 148"
+_ARTICLE_QUERY = re.compile(
+    r"^\s*art(?:\.|ykuł|ykul)?\s*(?P<number>\d+[a-z]*(?:\s?\[[0-9a-z]+\]|\^[0-9a-z]+|[⁰¹²³⁴⁵⁶⁷⁸⁹]+)?)\.?"
+    r"(?:\s*(?:§|ust\.|ust\b|pkt\b|lit\.|lit\b)\s*(?:\d+[a-z]*|[a-z]\b))*\s*(?P<act>.*?)\s*$",
+    re.IGNORECASE,
+)
+
+
+class SearchUnavailableError(RuntimeError):
+    """Nothing found and the semantic index could not be asked."""
+
+
+def _fold(text: str) -> str:
+    """'Kodeksu karnego' -> 'kodeksukarnego', 'k.k.' -> 'kk'."""
+    return slugify(text).replace("_", "")
+
+
+def key_act_for(hint: str) -> KeyAct | None:
+    """The key act a user means by 'kk', 'kodeks karny', 'Kodeksu karnego', 'ustawy o VAT', ..."""
+    folded = _fold(hint)
+    for act in KEY_ACTS:
+        if folded in {_fold(name) for name in (act.short_title, *act.aliases, *act.abbreviations)}:
+            return act
+    return None
+
+
+def parse_article_query(query: str) -> tuple[str, str] | None:
+    """('148', 'kk') for 'art. 148 § 1 kk'; None when the query does not start with an article number."""
+    match = _ARTICLE_QUERY.match(query)
+    if not match:
+        return None
+    return normalize_article_number(match["number"]), match["act"].strip(" .,")
+
+
+def _hit(article: Article, match: str, score: float) -> ArticleSearchHit:
+    return ArticleSearchHit(
+        slug=article.slug,
+        act_key=article.act.act_key,
+        act_title=article.act.short_title or article.act.title,
+        article_number=article.number,
+        score=score,
+        summary_preview=summary_preview(article.summary or article.text),
+        match=match,
+    )
+
+
+async def find_referenced_articles(session: AsyncSession, query: str, act_key: str | None) -> list[Article]:
+    """Articles the query names directly. Without an act ('art. 148') the same number in every act matches."""
+    parsed = parse_article_query(query)
+    if parsed is None:
+        return []
+    number, hint = parsed
+    statement = select(Article).join(Article.act).options(joinedload(Article.act)).where(Article.number == number)
+    if hint:
+        key_act = key_act_for(hint)
+        if key_act is None:
+            return []  # "art. 5 ustawy o czymś" - an act we do not have
+        statement = statement.where(Act.eli == key_act.eli)
+    elif act_key:
+        statement = statement.where(Act.act_key == act_key)
+    return list((await session.scalars(statement.order_by(Act.id))).all())
+
+
+async def search_text(
+    session: AsyncSession, query: str, limit: int, act_key: str | None
+) -> list[tuple[Article, float]]:
+    """Articles whose wording contains all words of the query (exact forms; quotes for a phrase)."""
+    if not re.search(r"\w{3,}", query):
+        return []
+    vector = func.to_tsvector("simple", Article.text)
+    tsquery = func.websearch_to_tsquery("simple", query)
+    rank = func.ts_rank(vector, tsquery)
+    statement = (
+        select(Article, rank)
+        .join(Article.act)
+        .options(joinedload(Article.act))
+        .where(vector.op("@@")(tsquery))
+        .order_by(rank.desc())
+        .limit(limit)
+    )
+    if act_key:
+        statement = statement.where(Act.act_key == act_key)
+    return [(article, float(score)) for article, score in (await session.execute(statement)).all()]
+
+
+async def search(
+    session: AsyncSession, query: str, limit: int, min_score: float, act_key: str | None = None
+) -> list[ArticleSearchHit]:
+    """Named articles first, then semantic hits, then full-text hits; each article once, at most `limit`."""
+    hits: dict[str, ArticleSearchHit] = {}
+    for article in await find_referenced_articles(session, query, act_key):
+        hits.setdefault(article.slug, _hit(article, "reference", 1.0))
+
+    semantic: list[tuple[ArticleSearchHit, ActArticleChunk]] | None
+    try:
+        semantic = await asyncio.to_thread(search_articles, query, k=limit, min_score=min_score, act_key=act_key)
+    except (ResponseHandlingException, UnexpectedResponse) as exc:
+        logger.warning("Semantic search unavailable: %s", exc)
+        semantic = None
+    for hit, _ in semantic or []:
+        hits.setdefault(hit.slug, hit)
+
+    for article, rank in await search_text(session, query, limit, act_key):
+        hits.setdefault(article.slug, _hit(article, "text", round(rank, 4)))
+
+    if not hits and semantic is None:
+        raise SearchUnavailableError("Search index (Qdrant) is unavailable")
+    return list(hits.values())[:limit]
 
 
 def summary_preview(summary: str, limit: int = PREVIEW_CHARS) -> str:

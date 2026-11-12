@@ -1,6 +1,7 @@
 from datetime import date
 
 import httpx
+import pytest
 from qdrant_client.http.exceptions import ResponseHandlingException
 
 from app.schemas.articles import ActInfo, ArticleDetail, ArticleReference, ArticleSearchHit
@@ -106,11 +107,22 @@ def test_get_sitting_sejm_down_is_502(api, monkeypatch):
 # --- articles ---
 
 
-def test_search_articles_returns_hits(api, monkeypatch):
+@pytest.fixture
+def no_db_search(monkeypatch):
+    """Article-reference and full-text search need Postgres; here they find nothing, so only Qdrant answers."""
+
+    async def nothing(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(articles_service, "find_referenced_articles", nothing)
+    monkeypatch.setattr(articles_service, "search_text", nothing)
+
+
+def test_search_articles_returns_hits(api, monkeypatch, no_db_search):
     calls = {}
 
-    def fake_search(query, k, min_score):
-        calls.update(query=query, k=k, min_score=min_score)
+    def fake_search(query, k, min_score, act_key=None):
+        calls.update(query=query, k=k, min_score=min_score, act_key=act_key)
         return [(HIT, None)]
 
     monkeypatch.setattr(articles_service, "search_articles", fake_search)
@@ -119,15 +131,16 @@ def test_search_articles_returns_hits(api, monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json() == [HIT.model_dump()]
-    assert calls == {"query": "akcyza na e-papierosy", "k": 3, "min_score": 0.4}
+    assert calls == {"query": "akcyza na e-papierosy", "k": 3, "min_score": 0.4, "act_key": None}
 
 
 def test_search_articles_validates_query(api):
     assert api.post("/api/v1/articles/search", json={"query": "a"}).status_code == 422
     assert api.post("/api/v1/articles/search", json={}).status_code == 422
+    assert api.post("/api/v1/articles/search", json={"query": "akcyza", "limit": 50}).status_code == 422
 
 
-def test_search_articles_qdrant_down_is_503(api, monkeypatch):
+def test_search_articles_qdrant_down_is_503(api, monkeypatch, no_db_search):
     def fake_search(*args, **kwargs):
         raise ResponseHandlingException(ConnectionError("down"))
 

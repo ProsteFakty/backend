@@ -1,8 +1,6 @@
-import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -15,16 +13,21 @@ router = APIRouter(prefix="/api/v1/articles", tags=["articles"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
-@router.post("/search", summary="Articles best matching a user's phrase (top 3, score >= threshold)")
-async def search_articles(body: ArticleSearchRequest) -> list[ArticleSearchHit]:
+@router.post("/search", summary="Articles matching a question, a phrase from the law or 'art. 148 kk'")
+async def search_articles(body: ArticleSearchRequest, session: SessionDep) -> list[ArticleSearchHit]:
+    """Order: the article named in the query (`match: reference`), articles similar in meaning (`semantic`,
+    cosine >= SEARCH_MIN_SCORE), articles containing the query words (`text`). Each article appears once."""
     settings = get_settings()
     try:
-        results = await asyncio.to_thread(
-            service.search_articles, body.query, k=settings.search_top_k, min_score=settings.search_min_score
+        return await service.search(
+            session,
+            body.query,
+            limit=body.limit or settings.search_top_k,
+            min_score=settings.search_min_score,
+            act_key=body.act_key,
         )
-    except (ResponseHandlingException, UnexpectedResponse) as exc:
-        raise HTTPException(503, "Search index (Qdrant) is unavailable") from exc
-    return [hit for hit, _ in results]
+    except service.SearchUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 @router.get("/{slug}", summary="Full article: act, original text, summary and references")
