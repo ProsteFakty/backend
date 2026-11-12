@@ -100,6 +100,9 @@ async def list_mp_votes(
         .limit(page_size)
         .offset((page - 1) * page_size)
     )
+    rows = rows.all()
+    # Same lazy Gemini summaries as the sitting detail, only for the bills this page returns.
+    await sittings._fill_summaries(session, {bill for _, _, _, bill, _ in rows})
     items = [
         MpVoteOut(
             sitting=sitting_number,
