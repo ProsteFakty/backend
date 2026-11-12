@@ -133,6 +133,7 @@ class Voting(Base):
     clubs: Mapped[list["VotingClubResult"]] = relationship(
         back_populates="voting", order_by="VotingClubResult.club", cascade="all, delete-orphan"
     )
+    mp_votes: Mapped[list["MpVote"]] = relationship(back_populates="voting", cascade="all, delete-orphan")
 
     @property
     def passed(self) -> bool | None:
@@ -148,7 +149,7 @@ class Voting(Base):
 
 
 class VotingClubResult(Base):
-    """Per-club aggregate of one voting. Individual MP votes are not stored."""
+    """Per-club aggregate of one voting."""
 
     __tablename__ = "voting_club_results"
     __table_args__ = (UniqueConstraint("voting_id", "club"),)
@@ -173,6 +174,30 @@ class VotingClubResult(Base):
             if count * 2 > voted:
                 return name
         return "split"
+
+
+class MpVote(Base):
+    """How one MP voted. Stored only for final electronic votings (vote on the whole document)."""
+
+    __tablename__ = "mp_votes"
+    __table_args__ = (UniqueConstraint("voting_id", "mp_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    voting_id: Mapped[int] = mapped_column(ForeignKey("votings.id", ondelete="CASCADE"))
+    mp_id: Mapped[int] = mapped_column(index=True)  # Sejm API MP id, unique within a term
+    club: Mapped[str | None] = mapped_column(String(32))  # MP's club at the time of the voting
+    vote: Mapped[str] = mapped_column(String(16))  # for / against / abstained / absent
+
+    voting: Mapped[Voting] = relationship(back_populates="mp_votes")
+
+
+class SittingMpVotesSync(Base):
+    """Marks sittings whose final votings were backfilled with individual MP votes."""
+
+    __tablename__ = "sitting_mp_votes_sync"
+
+    sitting_id: Mapped[int] = mapped_column(ForeignKey("sittings.id", ondelete="CASCADE"), primary_key=True)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class Layer(enum.StrEnum):

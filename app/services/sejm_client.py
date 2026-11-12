@@ -35,8 +35,15 @@ class SejmClient:
 
     async def process(self, term: int, print_number: str) -> dict[str, Any] | None:
         """Legislative process started by the given print, or None if the print does not start one."""
+        return await self._get_or_none(f"/term{term}/processes/{print_number}")
+
+    async def mp(self, term: int, mp_id: int) -> dict[str, Any] | None:
+        """MP profile, or None if there is no MP with this id in the term."""
+        return await self._get_or_none(f"/term{term}/MP/{mp_id}")
+
+    async def _get_or_none(self, path: str) -> Any:
         try:
-            return await self._get(f"/term{term}/processes/{print_number}")
+            return await self._get(path)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return None
