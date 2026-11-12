@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Face recognition ONNX models (downloaded on first use)
+models/
