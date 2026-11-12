@@ -11,7 +11,7 @@ from app.services.politicians import (
     search_politicians,
 )
 
-router = APIRouter(prefix="/politicians", tags=["politicians"])
+router = APIRouter(prefix="/api/v1/politicians", tags=["politicians"])
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
@@ -79,7 +79,7 @@ def search(
 ) -> list[PoliticianSummary]:
     """Matches word prefixes of first and last name; MPs whose last name starts with the query come first.
 
-    Open a result with `GET /api/politicians/{mp_id}`.
+    Open a result with `GET /api/v1/politicians/{mp_id}`.
     """
     return [PoliticianSummary(**p.model_dump()) for p in search_politicians(q, limit)]
 

@@ -22,7 +22,7 @@ pytest
 
 ## Politician recognition (PoC)
 
-`POST /api/politicians/recognize` (multipart, field `photo`) detects faces and matches them against MPs of the current Sejm term.
+`POST /api/v1/politicians/recognize` (multipart, field `photo`) detects faces and matches them against MPs of the current Sejm term.
 Faces: OpenCV YuNet + SFace (ONNX, downloaded to `models/` on first use). Index: Qdrant collection `politician_faces`, built from Sejm API photos. Uploaded photos are not stored.
 
 Build / refresh the index (once after deploy, ~500 MPs):
@@ -32,7 +32,7 @@ docker compose exec backend python -m scripts.index_politicians
 ```
 
 ```bash
-curl -F photo=@face.jpg http://localhost:8000/api/politicians/recognize
+curl -F photo=@face.jpg http://localhost:8000/api/v1/politicians/recognize
 # {"faces": [{"box": [x, y, w, h], "similarity": 0.62, "politician": {"full_name": ..., "club": ..., ...}}]}
 ```
 

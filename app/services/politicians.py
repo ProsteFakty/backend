@@ -66,7 +66,7 @@ class Politician(BaseModel):
 
 
 class PoliticianSummary(BaseModel):
-    """Search result row; the full profile is GET /api/politicians/{mp_id}."""
+G    """Search result row; the full profile is GET /api/v1/politicians/{mp_id}."""
 
     mp_id: int
     full_name: str

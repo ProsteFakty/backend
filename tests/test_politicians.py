@@ -40,7 +40,7 @@ def jpeg() -> bytes:
 
 
 def post(client, data: bytes):
-    return client.post("/api/politicians/recognize", files={"photo": ("p.jpg", data, "image/jpeg")})
+    return client.post("/api/v1/politicians/recognize", files={"photo": ("p.jpg", data, "image/jpeg")})
 
 
 def face(box=(10, 20, 30, 40)) -> Face:
@@ -97,25 +97,25 @@ def mps(monkeypatch):
 
 
 def test_search_last_name_hits_first(client, mps):
-    body = client.get("/api/politicians/search", params={"q": "adam"}).json()
+    body = client.get("/api/v1/politicians/search", params={"q": "adam"}).json()
     assert [p["full_name"] for p in body] == ["Andrzej Adamczyk", "Adam Łęcki"]
     assert set(body[0]) == {"mp_id", "full_name", "club", "active", "photo_url"}
 
 
 def test_search_without_polish_characters(client, mps):
-    body = client.get("/api/politicians/search", params={"q": "lecki"}).json()
+    body = client.get("/api/v1/politicians/search", params={"q": "lecki"}).json()
     assert [p["mp_id"] for p in body] == [2]
 
 
 def test_search_all_words_must_match(client, mps):
-    assert client.get("/api/politicians/search", params={"q": "jan kow"}).json()[0]["mp_id"] == 3
-    assert client.get("/api/politicians/search", params={"q": "jan adam"}).json() == []
+    assert client.get("/api/v1/politicians/search", params={"q": "jan kow"}).json()[0]["mp_id"] == 3
+    assert client.get("/api/v1/politicians/search", params={"q": "jan adam"}).json() == []
 
 
 def test_search_query_too_short(client, mps):
-    assert client.get("/api/politicians/search", params={"q": "a"}).status_code == 422
+    assert client.get("/api/v1/politicians/search", params={"q": "a"}).status_code == 422
 
 
 def test_profile(client, mps):
-    assert client.get("/api/politicians/3").json()["full_name"] == "Jan Kowalski"
-    assert client.get("/api/politicians/999").status_code == 404
+    assert client.get("/api/v1/politicians/3").json()["full_name"] == "Jan Kowalski"
+    assert client.get("/api/v1/politicians/999").status_code == 404

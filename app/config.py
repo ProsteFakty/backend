@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3.7-flash"
 
     sejm_api_url: str = "https://api.sejm.gov.pl/sejm"
-    sejm_term: int = 10
 
     embedding_model: str = "BAAI/bge-m3"  # multilingual (Polish), 8192-token context
     # POST /api/v1/articles/search: how many articles and the minimum cosine similarity to return
