@@ -147,18 +147,23 @@ def search(
     responses={404: {"model": ErrorResponse, "description": "No MP with this id in the current term."}, **SEJM_DOWN},
 )
 def profile(mp_id: int) -> MpProfile:
-    """`Politician` (as in the camera scan) + functions, terms and voting stats for the profile screen.
+    """Data for the "Profil posła" screen.
 
-    Voting stats (current term, from Sejm `GET /term{t}/MP/{id}/votings/stats`):
-    - `votings_count`: votings held while the MP had the mandate
+    Returns every field of `Politician` (the same object as in the camera scan) plus:
+    - `gender`: `female` / `male`, for "Posłanka" / "Poseł"
+    - `club_label`, `club_name`: short label and the name for the club chip, e.g. `Koalicja Obywatelska`
+    - `functions`: committee and club functions, most important first; empty when the MP has none
+    - `terms`: Sejm terms the MP served in, e.g. `[8, 9, 10]`
+    - `votings_count`: votings held in the current term while the MP had the mandate
     - `votes_cast`: votings the MP took part in (for / against / abstained); `votings_count - votes_cast` = missed
     - `attendance_percent`: `votes_cast / votings_count * 100`, 1 decimal (the "obecność" tile)
     - `votes_cast_all_terms`: `votes_cast` summed over all `terms`
+    - `office_address`: always `null` for now
 
-    Full field descriptions: the **Schema** tab of the 200 response.
+    Full descriptions: the **Schema** tab of the 200 response.
 
-    The extras are best effort: when the Sejm API fails for them they come back `null` / `[]`.
-    The first request for an MP takes ~1.5-3 s (Sejm API), later ones are cached.
+    If the Sejm API fails, the extra fields come back as `null` / `[]` and the endpoint still returns 200.
+    The first request for an MP takes 1-3 s; later requests come from the cache.
     """
     try:
         politician = get_politician(mp_id)
