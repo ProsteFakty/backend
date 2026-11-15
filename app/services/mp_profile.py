@@ -38,12 +38,26 @@ class MpProfile(Politician):
     )
     terms: list[int] = Field(description="Sejm terms as an MP (from term 3), ascending, incl. the current one.")
     attendance_percent: float | None = Field(
-        description="Current term: share of votings the MP voted in, 0-100, 1 decimal. Null if unavailable."
+        description="Obecność (\"97%\" tile). Current term: `votes_cast / votings_count * 100`, 0-100, 1 decimal. "
+        "Abstaining counts as present; excused and unexcused absences both count as missed. "
+        "Null if the Sejm API stats are unavailable or no votings were held yet during the mandate.",
+        examples=[98.4],
     )
-    votes_cast: int | None = Field(description="Current term: votings the MP voted in.")
-    votings_count: int | None = Field(description="Current term: votings held while the MP had the mandate.")
+    votes_cast: int | None = Field(
+        description="Current term: number of votings the MP took part in (voted for, against or abstained). "
+        "Sum of `numVoted` from Sejm `GET /term{t}/MP/{id}/votings/stats`. "
+        "`votings_count - votes_cast` = votings missed. Null if the stats are unavailable.",
+        examples=[5147],
+    )
+    votings_count: int | None = Field(
+        description="Current term: number of votings held while the MP had the mandate (an MP who joined mid-term "
+        "has fewer). Sum of `numVotings` from the same Sejm stats. Null if the stats are unavailable.",
+        examples=[5232],
+    )
     votes_cast_all_terms: int | None = Field(
-        description="Votings the MP voted in over all `terms`. Null if any term could not be loaded."
+        description="Same as `votes_cast`, summed over every term in `terms` (each with that term's MP id). "
+        "Null if any term's stats or MP list could not be loaded, so a partial sum is never returned.",
+        examples=[28174],
     )
     office_address: str | None = Field(None, description="Biuro poselskie. Always null: no source yet.")
 
