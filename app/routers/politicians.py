@@ -1,14 +1,23 @@
+import math
+
+import httpx
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
+from app.schemas.sittings import Page
 from app.services.faces import decode_image, get_engine
 from app.services.politicians import (
+    ClubOut,
     Politician,
+    PoliticianListItem,
     PoliticianSummary,
+    clubs_with_counts,
+    filter_politicians,
     get_politician,
     search_faces,
     search_politicians,
+    to_list_item,
 )
 
 router = APIRouter(prefix="/api/v1/politicians", tags=["politicians"])
@@ -48,6 +57,7 @@ class RecognizeResponse(BaseModel):
                                 "full_name": "Andrzej Adamczyk",
                                 "club": "PiS",
                                 "district": "Kraków",
+                                "district_number": 13,
                                 "voivodeship": "małopolskie",
                                 "birth_date": "1959-01-04",
                                 "birth_location": "Krzeszowice",
@@ -70,6 +80,52 @@ class RecognizeResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: str
+
+
+SEJM_DOWN = {502: {"model": ErrorResponse, "description": "Sejm API unavailable and no MP data cached yet."}}
+INCLUDE_INACTIVE = Query(False, description="Also list MPs whose mandate expired during the term.")
+
+
+@router.get("", summary="List MPs (Szukaj posła)", responses=SEJM_DOWN)
+def list_mps(
+    q: str | None = Query(
+        None, max_length=100, description="Name fragment(s), e.g. `a`, `kowal jan`. Polish characters optional."
+    ),
+    club: str | None = Query(None, description="Club id from `GET /api/v1/politicians/clubs`, e.g. `KO`. empty club returns all and makes it almost like /search endpoint"),
+    include_inactive: bool = INCLUDE_INACTIVE,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(30, ge=1, le=100),
+) -> Page[PoliticianListItem]:
+    """Matching MPs of the current term, alphabetical by last name in Polish order, paginated.
+
+    Group rows into sections by `letter` (a section can continue on the next page).
+    An unknown `club` or a page past the end returns empty `items`.
+    """
+    try:
+        mps = filter_politicians(q, club, include_inactive)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Sejm API is unavailable") from exc
+    start = (page - 1) * page_size
+    return Page(
+        items=[to_list_item(p) for p in mps[start : start + page_size]],
+        page=page,
+        page_size=page_size,
+        total=len(mps),
+        pages=math.ceil(len(mps) / page_size),
+    )
+
+
+# Registered before /{mp_id}, otherwise "clubs" would be parsed as an MP id.
+@router.get("/clubs", summary="Club filter chips", responses=SEJM_DOWN)
+def clubs(include_inactive: bool = INCLUDE_INACTIVE) -> list[ClubOut]:
+    """Clubs with at least one MP, biggest first, `niez.` (unaffiliated) last.
+
+    `members_count` equals `total` of `GET /api/v1/politicians?club={id}` with the same `include_inactive`.
+    """
+    try:
+        return clubs_with_counts(include_inactive)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Sejm API is unavailable") from exc
 
 
 @router.get("/search", summary="Search MPs by name")
