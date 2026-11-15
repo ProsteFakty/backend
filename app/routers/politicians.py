@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from app.config import get_settings
 from app.schemas.sittings import Page
 from app.services.faces import decode_image, get_engine
+from app.services.mp_profile import MpProfile, build_profile
 from app.services.politicians import (
     ClubOut,
     Politician,
@@ -143,14 +144,21 @@ def search(
 @router.get(
     "/{mp_id}",
     summary="MP profile",
-    responses={404: {"model": ErrorResponse, "description": "No MP with this id in the current term."}},
+    responses={404: {"model": ErrorResponse, "description": "No MP with this id in the current term."}, **SEJM_DOWN},
 )
-def profile(mp_id: int) -> Politician:
-    """Same object as `politician` in the camera scan response."""
-    politician = get_politician(mp_id)
+def profile(mp_id: int) -> MpProfile:
+    """`Politician` (as in the camera scan) + functions, terms and voting stats for the profile screen.
+
+    The extras are best effort: when the Sejm API fails for them they come back `null` / `[]`.
+    The first request for an MP takes ~1.5-3 s (Sejm API), later ones are cached.
+    """
+    try:
+        politician = get_politician(mp_id)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Sejm API is unavailable") from exc
     if politician is None:
         raise HTTPException(404, "MP not found")
-    return politician
+    return build_profile(politician)
 
 
 @router.post(
