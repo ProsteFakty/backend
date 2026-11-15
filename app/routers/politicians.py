@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from app.config import get_settings
 from app.schemas.sittings import Page
 from app.services.faces import decode_image, get_engine
+from app.services.mp_profile import MpProfile, build_profile
 from app.services.politicians import (
     ClubOut,
     Politician,
@@ -143,14 +144,34 @@ def search(
 @router.get(
     "/{mp_id}",
     summary="MP profile",
-    responses={404: {"model": ErrorResponse, "description": "No MP with this id in the current term."}},
+    responses={404: {"model": ErrorResponse, "description": "No MP with this id in the current term."}, **SEJM_DOWN},
 )
-def profile(mp_id: int) -> Politician:
-    """Same object as `politician` in the camera scan response."""
-    politician = get_politician(mp_id)
+def profile(mp_id: int) -> MpProfile:
+    """Data for the "Profil posła" screen.
+
+    Returns every field of `Politician` (the same object as in the camera scan) plus:
+    - `gender`: `female` / `male`, for "Posłanka" / "Poseł"
+    - `club_label`, `club_name`: short label and the name for the club chip, e.g. `Koalicja Obywatelska`
+    - `functions`: committee and club functions, most important first; empty when the MP has none
+    - `terms`: Sejm terms the MP served in, e.g. `[8, 9, 10]`
+    - `votings_count`: votings held in the current term while the MP had the mandate
+    - `votes_cast`: votings the MP took part in (for / against / abstained); `votings_count - votes_cast` = missed
+    - `attendance_percent`: `votes_cast / votings_count * 100`, 1 decimal (the "obecność" tile)
+    - `votes_cast_all_terms`: `votes_cast` summed over all `terms`
+    - `office_address`: always `null` for now
+
+    Full descriptions: the **Schema** tab of the 200 response.
+
+    If the Sejm API fails, the extra fields come back as `null` / `[]` and the endpoint still returns 200.
+    The first request for an MP takes 1-3 s; later requests come from the cache.
+    """
+    try:
+        politician = get_politician(mp_id)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Sejm API is unavailable") from exc
     if politician is None:
         raise HTTPException(404, "MP not found")
-    return politician
+    return build_profile(politician)
 
 
 @router.post(

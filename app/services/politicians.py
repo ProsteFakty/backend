@@ -107,6 +107,7 @@ class Club(BaseModel):
 
     id: str
     name: str
+    member_functions: dict[int, str] = Field(default_factory=dict, description="MP id -> function in the club.")
 
 
 class ClubOut(BaseModel):
@@ -135,20 +136,22 @@ def club_label(club_id: str | None) -> str | None:
 
 
 class _Cached:
-    """Value fetched from the Sejm API, refreshed after MP_LIST_TTL_SECONDS.
+    """Value fetched from the Sejm API, refreshed after `ttl` seconds (default MP_LIST_TTL_SECONDS).
 
     A failed refresh keeps serving the stale value; it raises only when nothing was fetched yet.
     """
 
-    def __init__(self, fetch):
+    def __init__(self, fetch, ttl: float | None = None):
         self._fetch = fetch
+        self._ttl = ttl
         self._lock = threading.Lock()
         self._value = None
         self._fetched_at = 0.0
 
     def get(self):
         with self._lock:
-            if self._value is None or time.monotonic() - self._fetched_at > MP_LIST_TTL_SECONDS:
+            ttl = MP_LIST_TTL_SECONDS if self._ttl is None else self._ttl
+            if self._value is None or time.monotonic() - self._fetched_at > ttl:
                 try:
                     self._value = self._fetch()
                 except httpx.HTTPError:
@@ -169,7 +172,14 @@ def _fetch_mps() -> list[Politician]:
 def _fetch_clubs() -> list[Club]:
     r = httpx.get(f"{SEJM_API}/term{get_settings().sejm_term}/clubs", timeout=30)
     r.raise_for_status()
-    return [Club(id=c["id"], name=c.get("name") or c["id"]) for c in r.json()]
+    return [
+        Club(
+            id=c["id"],
+            name=c.get("name") or c["id"],
+            member_functions={m["id"]: m["function"] for m in c.get("members", []) if m.get("function")},
+        )
+        for c in r.json()
+    ]
 
 
 _mps = _Cached(_fetch_mps)
