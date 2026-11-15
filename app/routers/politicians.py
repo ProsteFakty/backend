@@ -149,6 +149,14 @@ def search(
 def profile(mp_id: int) -> MpProfile:
     """`Politician` (as in the camera scan) + functions, terms and voting stats for the profile screen.
 
+    Voting stats (current term, from Sejm `GET /term{t}/MP/{id}/votings/stats`):
+    - `votings_count`: votings held while the MP had the mandate
+    - `votes_cast`: votings the MP took part in (for / against / abstained); `votings_count - votes_cast` = missed
+    - `attendance_percent`: `votes_cast / votings_count * 100`, 1 decimal (the "obecność" tile)
+    - `votes_cast_all_terms`: `votes_cast` summed over all `terms`
+
+    Full field descriptions: the **Schema** tab of the 200 response.
+
     The extras are best effort: when the Sejm API fails for them they come back `null` / `[]`.
     The first request for an MP takes ~1.5-3 s (Sejm API), later ones are cached.
     """

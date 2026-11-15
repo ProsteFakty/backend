@@ -61,6 +61,43 @@ class MpProfile(Politician):
     )
     office_address: str | None = Field(None, description="Biuro poselskie. Always null: no source yet.")
 
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "mp_id": 140,
+                    "term": 10,
+                    "first_name": "Maria",
+                    "last_name": "Janyska",
+                    "full_name": "Maria Małgorzata Janyska",
+                    "club": "KO",
+                    "district": "Piła",
+                    "district_number": 38,
+                    "voivodeship": "wielkopolskie",
+                    "birth_date": "1962-01-16",
+                    "birth_location": "Wyrzysk",
+                    "profession": "ekonomista",
+                    "education": "wyższe",
+                    "email": "Maria.Janyska@sejm.pl",
+                    "number_of_votes": 23592,
+                    "active": True,
+                    "photo_url": "https://api.sejm.gov.pl/sejm/term10/MP/140/photo",
+                    "profile_url": "https://www.sejm.gov.pl/Sejm10.nsf/posel.xsp?id=140&type=A",
+                    "gender": "female",
+                    "club_label": "KO",
+                    "club_name": "Koalicja Obywatelska",
+                    "functions": ["Przewodnicząca Komisji Administracji i Spraw Wewnętrznych"],
+                    "terms": [7, 8, 9, 10],
+                    "attendance_percent": 98.4,
+                    "votes_cast": 5146,
+                    "votings_count": 5232,
+                    "votes_cast_all_terms": 28174,
+                    "office_address": None,
+                }
+            ]
+        }
+    }
+
 
 # --- gender, club name -------------------------------------------------------------------------------------
 
