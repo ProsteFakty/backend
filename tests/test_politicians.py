@@ -143,7 +143,7 @@ def test_photo_url_points_to_our_backend(client, mps, monkeypatch):
     assert post(client, jpeg()).json()["faces"][0]["politician"]["photo_url"] == expected
 
 
-def test_sejm_outage_is_503(client, monkeypatch):
+def test_sejm_outage_is_502(client, monkeypatch):
     def down(*args):
         raise SejmUnavailableError("down")
 
@@ -151,9 +151,9 @@ def test_sejm_outage_is_503(client, monkeypatch):
     monkeypatch.setattr(router, "get_politician", down)
     monkeypatch.setattr(router, "search_politicians", down)
 
-    assert client.get("/api/v1/politicians/1/photo").status_code == 503
-    assert client.get("/api/v1/politicians/1").status_code == 503
-    assert client.get("/api/v1/politicians/search", params={"q": "kowal"}).status_code == 503
+    assert client.get("/api/v1/politicians/1/photo").status_code == 502
+    assert client.get("/api/v1/politicians/1").status_code == 502
+    assert client.get("/api/v1/politicians/search", params={"q": "kowal"}).status_code == 502
 
 
 def test_mp_list_falls_back_to_saved_copy(tmp_path, monkeypatch):
@@ -163,13 +163,13 @@ def test_mp_list_falls_back_to_saved_copy(tmp_path, monkeypatch):
 
     monkeypatch.setenv("SEJM_CACHE_DIR", str(tmp_path))
     get_settings.cache_clear()
-    monkeypatch.setattr(service, "_mps", [])
+    monkeypatch.setattr(service, "_mps", service._Cached(service._fetch_mps))
 
     monkeypatch.setattr(service.httpx, "get", lambda *a, **k: httpx.Response(200, json=[MP], request=httpx.Request("GET", "x")))
     assert [p.full_name for p in service.list_politicians()] == ["Andrzej Adamczyk"]
 
     # API down after a restart (nothing in memory): the copy on disk is used
-    monkeypatch.setattr(service, "_mps", [])
+    monkeypatch.setattr(service, "_mps", service._Cached(service._fetch_mps))
     monkeypatch.setattr(service.httpx, "get", lambda *a, **k: httpx.Response(503, request=httpx.Request("GET", "x")))
     assert [p.full_name for p in service.list_politicians()] == ["Andrzej Adamczyk"]
     get_settings.cache_clear()

@@ -32,3 +32,14 @@ def api(client_for) -> TestClient:
     client.app.dependency_overrides[get_session] = fake_session
     client.app.dependency_overrides[get_sejm_client] = lambda: object()
     return client
+
+
+@pytest.fixture(autouse=True)
+def no_sejm_network(monkeypatch):
+    """Sync Sejm API calls (MP lists, committees, voting stats) fail in tests unless a test stubs them."""
+    import httpx
+
+    def blocked(url, *args, **kwargs):
+        raise httpx.ConnectError(f"network disabled in tests: {url}")
+
+    monkeypatch.setattr(httpx, "get", blocked)
