@@ -1,24 +1,43 @@
-"""Articles read model: search (article reference, semantic in Qdrant, full text in Postgres) and full article data."""
+"""Articles read model: search and full article data.
+
+Search asks three sources and merges them into one ranking:
+- reference: the article the query names ("art. 148 kk") - then only that is returned,
+- semantic: titles + summaries embedded in Qdrant (meaning: "trzymanie psa na łańcuchu" -> "uwięź"),
+- text: title, summary and wording in Postgres full-text search (words: "papierosy" -> "papierosów").
+"""
 
 import asyncio
 import logging
 import re
+from dataclasses import dataclass, field
 
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
-from sqlalchemy import func, select
+from sqlalchemy import Integer, cast, func, literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from app.config import get_settings
 from app.db.articles import find_article_by_slug
 from app.db.models import Act, Article
 from app.pipeline.act_keys import normalize_article_number, slugify
+from app.pipeline.act_parser import is_repealed
 from app.pipeline.key_acts import KEY_ACTS, KeyAct
-from app.schemas.articles import ActInfo, ArticleDetail, ArticleReference, ArticleSearchHit
-from app.vectorstore.collections import ActArticleChunk
+from app.pipeline.polish import fold, search_terms
+from app.schemas.articles import ActInfo, ArticleDetail, ArticleReference, ArticleSearchHit, ArticleSearchResponse
 
 logger = logging.getLogger(__name__)
 
 PREVIEW_CHARS = 200
+# How many articles each source contributes to the ranking; paging stops there.
+SEMANTIC_CANDIDATES = 50
+TEXT_CANDIDATES = 50
+# Reciprocal rank fusion: an article scores 1 / (RRF_K + its rank) in every source that found it.
+RRF_K = 60
+
+_SIMPLE = literal_column("'simple'::regconfig")
+# ts_rank normalization: divide by the article's length, or the longest articles (tax definitions,
+# lists of exemptions) outrank the short one that is exactly about the query.
+_BY_LENGTH = 2
 
 # "art. 148 kk", "Art. 22[1] § 1 Kodeksu pracy", "artykuł 30 ust. 1 pkt 2 ustawy o pit", "art 148"
 _ARTICLE_QUERY = re.compile(
@@ -54,25 +73,21 @@ def parse_article_query(query: str) -> tuple[str, str] | None:
     return normalize_article_number(match["number"]), match["act"].strip(" .,")
 
 
-def _hit(article: Article, match: str, score: float) -> ArticleSearchHit:
-    return ArticleSearchHit(
-        slug=article.slug,
-        act_key=article.act.act_key,
-        act_title=article.act.short_title or article.act.title,
-        article_number=article.number,
-        score=score,
-        summary_preview=summary_preview(article.summary or article.text),
-        match=match,
-    )
+def preview(text: str, limit: int = PREVIEW_CHARS) -> str:
+    """First `limit` characters, cut at a word boundary; markdown bold markers dropped."""
+    text = " ".join(text.replace("**", "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(",;:") + "…"
 
 
-async def find_referenced_articles(session: AsyncSession, query: str, act_key: str | None) -> list[Article]:
-    """Articles the query names directly. Without an act ('art. 148') the same number in every act matches."""
+async def find_referenced_articles(session: AsyncSession, query: str, act_key: str | None) -> list[str]:
+    """Slugs of the articles the query names. Without an act ('art. 148') the same number in every act matches."""
     parsed = parse_article_query(query)
     if parsed is None:
         return []
     number, hint = parsed
-    statement = select(Article).join(Article.act).options(joinedload(Article.act)).where(Article.number == number)
+    statement = select(Article.slug).join(Article.act).where(Article.number == number)
     if hint:
         key_act = key_act_for(hint)
         if key_act is None:
@@ -83,93 +98,112 @@ async def find_referenced_articles(session: AsyncSession, query: str, act_key: s
     return list((await session.scalars(statement.order_by(Act.id))).all())
 
 
-async def search_text(
-    session: AsyncSession, query: str, limit: int, act_key: str | None
-) -> list[tuple[Article, float]]:
-    """Articles whose wording contains all words of the query (exact forms; quotes for a phrase)."""
-    if not re.search(r"\w{3,}", query):
-        return []
-    vector = func.to_tsvector("simple", Article.text)
-    tsquery = func.websearch_to_tsquery("simple", query)
-    rank = func.ts_rank(vector, tsquery)
-    statement = (
-        select(Article, rank)
-        .join(Article.act)
-        .options(joinedload(Article.act))
-        .where(vector.op("@@")(tsquery))
-        .order_by(rank.desc())
-        .limit(limit)
-    )
+async def search_text(session: AsyncSession, query: str, limit: int, act_key: str | None) -> list[str]:
+    """Slugs of articles containing the query words, best first.
+
+    Words are matched by their stems (app.pipeline.polish); at least half of them must be present, and articles
+    with more of them come first. A query with a "phrase in quotes" is matched as written instead.
+    """
+    vector = Article.search_vector
+    if '"' in query:
+        tsquery = func.websearch_to_tsquery(_SIMPLE, fold(query))
+        statement = select(Article.slug).where(vector.op("@@")(tsquery)).order_by(func.ts_rank(vector, tsquery, _BY_LENGTH).desc())
+    else:
+        terms = search_terms(query)
+        if not terms:
+            return []
+        any_term = func.to_tsquery(_SIMPLE, " | ".join(terms))
+        matched = sum(cast(vector.op("@@")(func.to_tsquery(_SIMPLE, term)), Integer) for term in terms)
+        statement = (
+            select(Article.slug)
+            .where(vector.op("@@")(any_term), matched >= (len(terms) + 1) // 2)
+            .order_by(matched.desc(), func.ts_rank(vector, any_term, _BY_LENGTH).desc())
+        )
     if act_key:
-        statement = statement.where(Act.act_key == act_key)
-    return [(article, float(score)) for article, score in (await session.execute(statement)).all()]
+        statement = statement.join(Article.act).where(Act.act_key == act_key)
+    return list((await session.scalars(statement.order_by(Article.id).limit(limit))).all())
 
 
-async def search(
-    session: AsyncSession, query: str, limit: int, min_score: float, act_key: str | None = None
-) -> list[ArticleSearchHit]:
-    """Named articles first, then semantic hits, then full-text hits; each article once, at most `limit`."""
-    hits: dict[str, ArticleSearchHit] = {}
-    for article in await find_referenced_articles(session, query, act_key):
-        hits.setdefault(article.slug, _hit(article, "reference", 1.0))
-
-    semantic: list[tuple[ArticleSearchHit, ActArticleChunk]] | None
-    try:
-        semantic = await asyncio.to_thread(search_articles, query, k=limit, min_score=min_score, act_key=act_key)
-    except (ResponseHandlingException, UnexpectedResponse) as exc:
-        logger.warning("Semantic search unavailable: %s", exc)
-        semantic = None
-    for hit, _ in semantic or []:
-        hits.setdefault(hit.slug, hit)
-
-    for article, rank in await search_text(session, query, limit, act_key):
-        hits.setdefault(article.slug, _hit(article, "text", round(rank, 4)))
-
-    if not hits and semantic is None:
-        raise SearchUnavailableError("Search index (Qdrant) is unavailable")
-    return list(hits.values())[:limit]
-
-
-def summary_preview(summary: str, limit: int = PREVIEW_CHARS) -> str:
-    """First `limit` characters, cut at a word boundary; markdown bold markers dropped."""
-    text = " ".join(summary.replace("**", "").split())
-    if len(text) <= limit:
-        return text
-    return text[:limit].rsplit(" ", 1)[0].rstrip(",;:") + "…"
-
-
-def search_articles(
-    query: str, k: int = 3, min_score: float = 0.0, act_key: str | None = None
-) -> list[tuple[ArticleSearchHit, ActArticleChunk]]:
-    """Best `k` articles scoring at least `min_score`. An article split into parts counts once (its best part).
+def search_semantic(query: str, k: int, min_score: float, act_key: str | None = None) -> list[tuple[str, float]]:
+    """(slug, cosine similarity) of the best `k` articles scoring at least `min_score`, best first.
 
     Blocking (embeds the query on the CPU) - call it via asyncio.to_thread from async code.
     """
-    from app.vectorstore import get_vector_store  # lazy: pulls in torch + langchain
+    from app.vectorstore import ActArticleChunk, get_vector_store  # lazy: pulls in torch + langchain
 
     store = get_vector_store(ActArticleChunk)
     query_filter = ActArticleChunk.field_filter(act_key=act_key) if act_key else None
-    results = store.similarity_search_with_score(query, k=k * 4, filter=query_filter)
+    # A long summary is embedded in parts; the article counts once, with its best part.
+    results = store.similarity_search_with_score(query, k=k * 2, filter=query_filter)
 
-    hits: dict[str, tuple[ArticleSearchHit, ActArticleChunk]] = {}
+    hits: dict[str, float] = {}
     for doc, score in results:  # sorted best-first
-        if score < min_score:
+        if score < min_score or len(hits) == k:
             break
-        chunk = ActArticleChunk.model_validate(doc.metadata)
-        if chunk.slug in hits:
-            continue
-        hit = ArticleSearchHit(
-            slug=chunk.slug,
-            act_key=chunk.act_key,
-            act_title=chunk.act_title,
-            article_number=chunk.article_number,
-            score=round(score, 4),
-            summary_preview=summary_preview(chunk.summary),
+        hits.setdefault(doc.metadata["slug"], round(score, 4))
+    return list(hits.items())
+
+
+@dataclass
+class Ranked:
+    slug: str
+    score: float = 0.0
+    match: list[str] = field(default_factory=list)
+
+
+def fuse(reference: list[str], semantic: list[str], text: list[str]) -> list[Ranked]:
+    """One ranking out of three: named articles first, the rest by reciprocal rank fusion."""
+    ranked: dict[str, Ranked] = {}
+    for slug in reference:
+        ranked.setdefault(slug, Ranked(slug, 1.0, ["reference"]))
+    for name, slugs in (("semantic", semantic), ("text", text)):
+        for rank, slug in enumerate(slugs, start=1):
+            item = ranked.setdefault(slug, Ranked(slug))
+            item.score += 1 / (RRF_K + rank)
+            item.match.append(name)
+    return sorted(ranked.values(), key=lambda item: item.score, reverse=True)  # stable: ties keep source order
+
+
+async def search(
+    session: AsyncSession, query: str, limit: int = 10, offset: int = 0, act_key: str | None = None
+) -> ArticleSearchResponse:
+    reference = await find_referenced_articles(session, query, act_key)
+    text: list[str] = []
+    semantic: list[tuple[str, float]] | None = []
+    if not reference:  # "art. 148 kk" asks for that article, not for articles that mention 148
+        text = await search_text(session, query, TEXT_CANDIDATES, act_key)
+        try:
+            semantic = await asyncio.to_thread(
+                search_semantic, query, SEMANTIC_CANDIDATES, get_settings().search_min_score, act_key
+            )
+        except (ResponseHandlingException, UnexpectedResponse) as exc:
+            logger.warning("Semantic search unavailable: %s", exc)
+            semantic = None
+        if semantic is None and not text:
+            raise SearchUnavailableError("Search index (Qdrant) is unavailable")
+
+    ranked = fuse(reference, [slug for slug, _ in semantic or []], text)
+    statement = select(Article).options(joinedload(Article.act)).where(Article.slug.in_([r.slug for r in ranked]))
+    articles = {a.slug: a for a in await session.scalars(statement)} if ranked else {}
+    ranked = [r for r in ranked if r.slug in articles]  # the index may still hold an article removed since
+
+    items = []
+    for item in ranked[offset : offset + limit]:
+        article = articles[item.slug]
+        items.append(
+            ArticleSearchHit(
+                slug=article.slug,
+                act_key=article.act.act_key,
+                act_title=article.act.short_title or article.act.title,
+                article_number=article.number,
+                title=article.title,
+                summary=article.summary,
+                text_preview=preview(article.text),
+                match=item.match,
+                score=round(item.score, 4),
+            )
         )
-        hits[chunk.slug] = (hit, chunk)
-        if len(hits) == k:
-            break
-    return list(hits.values())
+    return ArticleSearchResponse(total=len(ranked), limit=limit, offset=offset, items=items)
 
 
 async def get_article(session: AsyncSession, slug: str) -> ArticleDetail | None:
@@ -177,22 +211,35 @@ async def get_article(session: AsyncSession, slug: str) -> ArticleDetail | None:
     if article is None:
         return None
 
-    referenced = [ref["slug"] for ref in article.references]
-    available = set(
-        (await session.scalars(select(Article.slug).where(Article.slug.in_(referenced)))).all() if referenced else []
-    )
+    slugs = [ref["slug"] for ref in article.references]
+    statement = select(Article).options(joinedload(Article.act)).where(Article.slug.in_(slugs))
+    referenced = {a.slug: a for a in await session.scalars(statement)} if slugs else {}
+
+    def reference(ref: dict) -> ArticleReference:
+        target = referenced.get(ref["slug"])
+        return ArticleReference(
+            slug=ref["slug"],
+            text=ref.get("text", ""),
+            same_act=ref["same_act"],
+            available=target is not None,
+            act_title=(target.act.short_title or target.act.title) if target else None,
+            article_number=target.number if target else None,
+            title=target.title if target else None,
+        )
+
     act = article.act
     return ArticleDetail(
         slug=article.slug,
         number=article.number,
         position=article.position,
-        act=ActInfo(act_key=act.act_key, title=act.title, act_type=act.act_type, act_date=act.act_date),
-        text=article.text,
+        act=ActInfo(
+            act_key=act.act_key, short_title=act.short_title, title=act.title, act_type=act.act_type, act_date=act.act_date
+        ),
+        title=article.title,
         summary=article.summary,
-        references=[
-            ArticleReference(slug=ref["slug"], same_act=ref["same_act"], available=ref["slug"] in available)
-            for ref in article.references
-        ],
+        text=article.text,
+        repealed=is_repealed(article.text),
+        references=[reference(ref) for ref in article.references],
     )
 
 

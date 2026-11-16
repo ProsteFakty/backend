@@ -90,6 +90,11 @@ def test_references_to_other_acts():
     [alias] = extract_references("art. 115 § 11 Kodeksu karnego stosuje się", "ustawa_kodeks_pracy_1974_06_26", ACTS, "1")
     assert alias == {"slug": f"{KK}_art_115", "same_act": False, "text": "art. 115 § 11"}
 
+    # the longest name wins: "Kodeksu karnego skarbowego" is not the penal code
+    acts = [*ACTS, ActRef("kks", ("kodeksu karnego skarbowego",))]
+    [fiscal] = extract_references("art. 53 § 3 Kodeksu karnego skarbowego", "ustawa_kodeks_pracy_1974_06_26", acts, "1")
+    assert fiscal["slug"] == "kks_art_53"
+
     text = (
         "w rozumieniu art. 46 ust. 2 albo 3 ustawy z dnia 26 października 1982 r. o wychowaniu w trzeźwości "
         "i przeciwdziałaniu alkoholizmowi (Dz. U. z 2023 r. poz. 2151)"

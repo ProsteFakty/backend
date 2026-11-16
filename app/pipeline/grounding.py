@@ -20,6 +20,55 @@ def _articles(text: str) -> set[str]:
     return {re.sub(r"[\s\[\]^]", "", a).lower() for a in _ARTICLE.findall(text)}
 
 
+_QUOTE_MARKS = "„”“\"'’‘«»"
+_DASHES = "–—‑-"
+
+
+def _normalize_quote(text: str) -> tuple[str, list[int]]:
+    """Text with case, spacing, quote and dash styles evened out, and for every character of the result its
+    index in `text` - so a match in the normalized text can be reported as a position in the original."""
+    chars: list[str] = []
+    positions: list[int] = []
+    for index, char in enumerate(text):
+        if char.isspace():
+            if chars and chars[-1] != " ":
+                chars.append(" ")
+                positions.append(index)
+            continue
+        chars.append('"' if char in _QUOTE_MARKS else "-" if char in _DASHES else char.lower()[:1])
+        positions.append(index)
+    if chars and chars[-1] == " ":
+        chars.pop()
+        positions.pop()
+    return "".join(chars), positions
+
+
+def find_quote(quote: str, source: str) -> list[tuple[int, int]] | None:
+    """Where `quote` appears word for word in `source` (case, spacing, quote and dash styles aside):
+    [(start, end)] with source[start:end] being the quoted words; None when it does not appear.
+
+    An ellipsis ("...", "…") may stand for an omitted part; the pieces must then appear in order and each
+    gets its own span.
+    """
+    pieces = [p.strip(' "') for p in re.split(r"\.\.\.|…", _normalize_quote(quote)[0])]
+    pieces = [p for p in pieces if p]
+    if not pieces:
+        return None
+    haystack, positions = _normalize_quote(source)
+    spans, cursor = [], 0
+    for piece in pieces:
+        start = haystack.find(piece, cursor)
+        if start < 0:
+            return None
+        cursor = start + len(piece)
+        spans.append((positions[start], positions[cursor - 1] + 1))
+    return spans
+
+
+def quote_found(quote: str, source: str) -> bool:
+    return find_quote(quote, source) is not None
+
+
 def ungrounded(generated: str, source: str) -> list[str]:
     """What `generated` states that `source` does not contain: numbers and article numbers. Empty = grounded."""
     problems = [f"liczba {n}" for n in sorted(_numbers(generated) - _numbers(source))]

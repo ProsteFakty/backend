@@ -80,12 +80,18 @@ def _article_numbers(text: str, start: int) -> tuple[list[str], int]:
     return [normalize_article_number(n.replace(" ", "")) for n in numbers], pos
 
 
+def _starts_with_words(text: str, prefix: str) -> bool:
+    """`text` starts with `prefix` and the prefix ends at a word boundary ("ustawy o fundacjach", not "...fundacjachX")."""
+    return text.startswith(prefix) and not text[len(prefix) : len(prefix) + 1].isalnum()
+
+
 def _target_act(tail: str, own_key: str, acts: list[ActRef]) -> str | None:
     """Act key the reference points to, from the text right after it; None when it cannot be told."""
     lowered = tail.lstrip().lower()
-    for act in acts:
-        if any(lowered.startswith(alias) for alias in act.aliases):
-            return act.act_key
+    # The longest alias wins: "Kodeksu karnego skarbowego" is not "Kodeksu karnego".
+    named = [(alias, act.act_key) for act in acts for alias in act.aliases if _starts_with_words(lowered, alias)]
+    if named:
+        return max(named, key=lambda pair: len(pair[0]))[1]
     if _SELF.match(tail):
         return own_key
     if match := _DATED_ACT.match(tail):

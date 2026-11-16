@@ -19,8 +19,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import Act, Article, Base, DocumentStatus, Layer, SourceDocument
-from app.db.session import get_engine, get_session_factory
+from app.db.models import Act, Article, DocumentStatus, Layer, SourceDocument
+from app.db.session import ensure_schema, get_session_factory
 from app.pipeline.act_keys import make_article_slug, parse_iso_date
 from app.pipeline.act_parser import ParsedArticle, parse_articles
 from app.pipeline.eli import ActSource, act_key_of, download, find_source
@@ -88,7 +88,7 @@ async def save(session: AsyncSession, parsed: ParsedAct) -> None:
             article = Article(act_id=act.id, number=parsed_article.number)
             session.add(article)
         elif article.text != parsed_article.text:
-            article.summary = None  # summary of the old wording
+            article.title = article.summary = None  # written for the old wording
         article.slug = make_article_slug(parsed.act_key, parsed_article.number)
         article.position = position
         article.text = parsed_article.text
@@ -127,11 +127,17 @@ async def already_loaded(session: AsyncSession, sha256: str) -> bool:
 async def main(elis: list[str], dry_run: bool, force: bool) -> None:
     key_acts = [a for a in KEY_ACTS if not elis or a.eli in elis]
     if not dry_run:
-        async with get_engine().begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        await ensure_schema()
 
     async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-        sources = {a.eli: await find_source(client, a.eli) for a in KEY_ACTS}
+        limit = asyncio.Semaphore(4)  # every act's key is needed to resolve references, not only the loaded ones
+
+        async def source_of(eli: str) -> ActSource:
+            async with limit:
+                return await find_source(client, eli)
+
+        found = await asyncio.gather(*(source_of(a.eli) for a in KEY_ACTS))
+        sources = {a.eli: source for a, source in zip(KEY_ACTS, found, strict=True)}
         act_keys = {eli: act_key_of(source.act) for eli, source in sources.items()}
         act_refs = [ActRef(act_keys[a.eli], tuple(alias.lower() for alias in a.aliases)) for a in KEY_ACTS]
 

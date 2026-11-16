@@ -8,7 +8,7 @@ from typing import Any, TypeVar
 from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_random_exponential
+from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_random_exponential
 
 from app.config import get_settings
 from app.utils.gemini_client.tools.base import GeminiTool
@@ -144,6 +144,8 @@ class GeminiClient:
         # 503 "high demand" spikes can last minutes; randomised waits keep parallel calls from retrying in sync.
         wait=wait_random_exponential(multiplier=2, max=60),
         stop=stop_after_attempt(8),
+        # Say so when waiting: a batch script would otherwise sit silent for minutes during an outage.
+        before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
     async def _generate_content(

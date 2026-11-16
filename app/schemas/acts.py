@@ -19,7 +19,8 @@ class ActArticleItem(BaseModel):
     slug: str = Field(description="GET /api/v1/articles/{slug}")
     number: str
     repealed: bool = Field(description="'(uchylony)': the number is kept, the content is gone")
-    summary_preview: str | None
+    title: str | None = Field(description="What the article is about; null until it has been summarized")
+    summary: str | None = Field(description="1-3 sentences in plain Polish; null until it has been summarized")
 
 
 class ActDetail(ActListItem):

@@ -11,8 +11,9 @@ MAX_PART_TOKENS = 400
 _SENTENCE_END = re.compile(r"(?<=[.!?;])\s+")
 
 
-def embedded_text(act_title: str, article_number: str, part: str) -> str:
-    return f"{act_title}\nArt. {article_number}\n{part}"
+def embedded_text(act_title: str, article_number: str, title: str | None, part: str) -> str:
+    heading = f"Art. {article_number} - {title}" if title else f"Art. {article_number}"
+    return f"{act_title}\n{heading}\n{part}"
 
 
 def split_summary(summary: str, count_tokens: Callable[[str], int], max_tokens: int = MAX_PART_TOKENS) -> list[str]:
@@ -32,6 +33,7 @@ def article_chunks(
     act_key: str,
     act_title: str,
     article_number: str,
+    title: str | None,
     summary: str,
     source_sha256: str,
     count_tokens: Callable[[str], int],
@@ -41,12 +43,13 @@ def article_chunks(
     return [
         (
             str(uuid.uuid5(uuid.NAMESPACE_URL, f"{slug}#{index}")),
-            embedded_text(act_title, article_number, part),
+            embedded_text(act_title, article_number, title, part),
             ActArticleChunk(
                 slug=slug,
                 act_key=act_key,
                 act_title=act_title,
                 article_number=article_number,
+                title=title,
                 part=index,
                 part_count=len(parts),
                 summary=summary,

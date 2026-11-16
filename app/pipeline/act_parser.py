@@ -52,7 +52,22 @@ def _join_lines(lines: list[str]) -> str:
             out = out[:-1] + line  # "szcze-" + "gólności"
         else:
             out += " " + line
-    return re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return re.sub(r" ([,;.])(?= |\n|$)", r"\1", out)  # "w ustawie , nie": a removed footnote mark leaves a gap
+
+
+# Unified texts of the Sejm Chancellery show a pending amendment as both wordings side by side:
+#   [Art. 5. the wording in force, about to be replaced]  <Art. 5. the wording that will replace it>
+# "[1a]" is not such a bracket but a superscript, as in "Art. 22[1a]".
+_SUPERSCRIPT = r"\[[0-9a-z]{1,4}\]"
+_FUTURE_WORDING = re.compile(r"<[^<>]*>")
+_OUTGOING_WORDING = re.compile(rf"\[(?!{_SUPERSCRIPT[2:]})((?:[^\[\]]|{_SUPERSCRIPT})*)\]")
+
+
+def current_wording(text: str) -> str:
+    """The text as in force on its legal status date: wording that is yet to enter into force is dropped,
+    wording that is about to be replaced stays (without the brackets)."""
+    return _OUTGOING_WORDING.sub(lambda match: match[1], _FUTURE_WORDING.sub("", text))
 
 
 def parse_articles(text: str) -> list[ParsedArticle]:
@@ -63,7 +78,7 @@ def parse_articles(text: str) -> list[ParsedArticle]:
     """
     articles: list[tuple[str, list[str]]] = []
     in_heading = False
-    for line in text.splitlines():
+    for line in current_wording(text).splitlines():
         line = line.strip()
         if match := _ARTICLE_START.match(line):
             number = normalize_article_number(match[1])

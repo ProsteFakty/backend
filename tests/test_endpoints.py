@@ -4,11 +4,11 @@ import httpx
 import pytest
 from qdrant_client.http.exceptions import ResponseHandlingException
 
-from app.schemas.articles import ActInfo, ArticleDetail, ArticleReference, ArticleSearchHit
+from app.schemas.articles import ActInfo, ArticleDetail, ArticleReference, ArticleSearchHit, ArticleSearchResponse
 from app.schemas.sittings import Page, SittingDetail, SittingListItem
 from app.services import articles as articles_service
 from app.services import sittings as sittings_service
-from app.services.articles import summary_preview
+from app.services.articles import preview
 
 SITTING = SittingListItem(
     number=30,
@@ -25,8 +25,11 @@ HIT = ArticleSearchHit(
     act_key="ustawa_o_podatku_akcyzowym_2008_12_06",
     act_title="Ustawa o podatku akcyzowym",
     article_number="99b",
-    score=0.71,
-    summary_preview="Stawka akcyzy na płyn do e-papierosów…",
+    title="Stawka akcyzy na płyn do e-papierosów",
+    summary="Akcyza na płyn do papierosów elektronicznych wynosi 0,55 zł za mililitr.",
+    text_preview="1. Produkcją płynu do papierosów elektronicznych…",
+    match=["semantic", "text"],
+    score=0.0328,
 )
 
 
@@ -107,44 +110,44 @@ def test_get_sitting_sejm_down_is_502(api, monkeypatch):
 # --- articles ---
 
 
-@pytest.fixture
-def no_db_search(monkeypatch):
-    """Article-reference and full-text search need Postgres; here they find nothing, so only Qdrant answers."""
-
-    async def nothing(*args, **kwargs):
-        return []
-
-    monkeypatch.setattr(articles_service, "find_referenced_articles", nothing)
-    monkeypatch.setattr(articles_service, "search_text", nothing)
-
-
-def test_search_articles_returns_hits(api, monkeypatch, no_db_search):
+def test_search_articles_returns_page(api, monkeypatch):
     calls = {}
 
-    def fake_search(query, k, min_score, act_key=None):
-        calls.update(query=query, k=k, min_score=min_score, act_key=act_key)
-        return [(HIT, None)]
+    async def fake_search(session, query, limit, offset, act_key):
+        calls.update(query=query, limit=limit, offset=offset, act_key=act_key)
+        return ArticleSearchResponse(total=1, limit=limit, offset=offset, items=[HIT])
 
-    monkeypatch.setattr(articles_service, "search_articles", fake_search)
+    monkeypatch.setattr(articles_service, "search", fake_search)
 
     resp = api.post("/api/v1/articles/search", json={"query": "akcyza na e-papierosy"})
 
     assert resp.status_code == 200
-    assert resp.json() == [HIT.model_dump()]
-    assert calls == {"query": "akcyza na e-papierosy", "k": 3, "min_score": 0.4, "act_key": None}
+    assert resp.json() == {"total": 1, "limit": 10, "offset": 0, "items": [HIT.model_dump()]}
+    assert calls == {"query": "akcyza na e-papierosy", "limit": 10, "offset": 0, "act_key": None}
+
+    api.post("/api/v1/articles/search", json={"query": "akcyza", "limit": 5, "offset": 10, "act_key": HIT.act_key})
+    assert calls == {"query": "akcyza", "limit": 5, "offset": 10, "act_key": HIT.act_key}
 
 
 def test_search_articles_validates_query(api):
     assert api.post("/api/v1/articles/search", json={"query": "a"}).status_code == 422
     assert api.post("/api/v1/articles/search", json={}).status_code == 422
-    assert api.post("/api/v1/articles/search", json={"query": "akcyza", "limit": 50}).status_code == 422
+    assert api.post("/api/v1/articles/search", json={"query": "akcyza", "limit": 51}).status_code == 422
+    assert api.post("/api/v1/articles/search", json={"query": "akcyza", "offset": -1}).status_code == 422
 
 
-def test_search_articles_qdrant_down_is_503(api, monkeypatch, no_db_search):
-    def fake_search(*args, **kwargs):
+def test_search_articles_qdrant_down_is_503(api, monkeypatch):
+    """Without Qdrant the search still answers from Postgres; 503 only when that finds nothing either."""
+
+    async def nothing(*args, **kwargs):
+        return []
+
+    def qdrant_down(*args, **kwargs):
         raise ResponseHandlingException(ConnectionError("down"))
 
-    monkeypatch.setattr(articles_service, "search_articles", fake_search)
+    monkeypatch.setattr(articles_service, "find_referenced_articles", nothing)
+    monkeypatch.setattr(articles_service, "search_text", nothing)
+    monkeypatch.setattr(articles_service, "search_semantic", qdrant_down)
 
     assert api.post("/api/v1/articles/search", json={"query": "akcyza"}).status_code == 503
 
@@ -154,10 +157,20 @@ def test_get_article_returns_detail(api, monkeypatch):
         slug=HIT.slug,
         number="99b",
         position=120,
-        act=ActInfo(act_key=HIT.act_key, title=HIT.act_title, act_type="ustawa", act_date=date(2008, 12, 6)),
-        text="Art. 99b. ...",
+        act=ActInfo(
+            act_key=HIT.act_key, short_title=HIT.act_title, title="Ustawa z dnia 6 grudnia 2008 r. o podatku akcyzowym",
+            act_type="ustawa", act_date=date(2008, 12, 6),
+        ),
+        title=HIT.title,
         summary="Streszczenie.",
-        references=[ArticleReference(slug="ustawa_o_vat_2004_03_11_art_5", same_act=False, available=False)],
+        text="Art. 99b. ...",
+        repealed=False,
+        references=[
+            ArticleReference(
+                slug="ustawa_o_vat_2004_03_11_art_5", text="art. 5", same_act=False, available=False,
+                act_title=None, article_number=None, title=None,
+            )
+        ],
     )
 
     async def fake_get(session, slug):
@@ -173,6 +186,6 @@ def test_get_article_returns_detail(api, monkeypatch):
     assert api.get("/api/v1/articles/missing").status_code == 404
 
 
-def test_summary_preview_cuts_at_word_boundary():
-    assert summary_preview("**Krótko** o   tym.") == "Krótko o tym."
-    assert summary_preview("jeden dwa trzy cztery", limit=12) == "jeden dwa…"
+def test_preview_cuts_at_word_boundary():
+    assert preview("**Krótko** o   tym.") == "Krótko o tym."
+    assert preview("jeden dwa trzy cztery", limit=12) == "jeden dwa…"

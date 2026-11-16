@@ -1,10 +1,11 @@
-"""Embed article summaries (scripts.summarize_articles) into Qdrant for POST /api/v1/articles/search.
+"""Embed article titles + summaries (scripts.summarize_articles) into Qdrant for POST /api/v1/articles/search.
 
     docker compose exec backend python -m scripts.index_articles                # all acts
     docker compose exec backend python -m scripts.index_articles DU/1997/553
 
 Each act is reindexed whole: its old points are deleted first, so removed articles disappear from search.
-Articles without a summary are not indexed. The first run downloads the embedding model (~2 GB).
+An article without a summary is indexed by the beginning of its wording; rerun after summarize_articles.
+Embedding runs on the CPU (roughly an hour for all acts on a laptop). The first run downloads the model (~2 GB).
 """
 
 import argparse
@@ -17,9 +18,13 @@ from sqlalchemy.orm import joinedload
 
 from app.db.models import Act, Layer, SourceDocument
 from app.db.session import get_session_factory
+from app.pipeline.act_parser import is_repealed
 from app.pipeline.chunks import article_chunks
+from app.services.articles import preview
 from app.vectorstore import ActArticleChunk, get_vector_store
 from app.vectorstore.embeddings import get_qdrant_client, get_tokenizer
+
+UNSUMMARIZED_CHARS = 1200
 
 
 def index_act(act: Act, source_sha256: str) -> int:
@@ -30,13 +35,15 @@ def index_act(act: Act, source_sha256: str) -> int:
     chunks = [
         chunk
         for article in act.articles
-        if article.summary
+        if not is_repealed(article.text)
         for chunk in article_chunks(
             slug=article.slug,
             act_key=act.act_key,
             act_title=title,
             article_number=article.number,
-            summary=article.summary,
+            title=article.title,
+            # Not summarized (yet): the beginning of the wording, so the article can still be found by meaning.
+            summary=article.summary or preview(article.text, UNSUMMARIZED_CHARS),
             source_sha256=source_sha256,
             count_tokens=count_tokens,
         )

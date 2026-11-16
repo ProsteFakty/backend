@@ -52,6 +52,7 @@ class ActArticleChunk(QdrantCollection):
     act_key: str  # slug prefix of the act: "ustawa_o_podatku_akcyzowym_2008_12_06"
     act_title: str
     article_number: str
+    title: str | None = None
     part: int
     part_count: int
     summary: str  # full article summary, so any matching part can show it
