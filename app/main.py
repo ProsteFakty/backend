@@ -6,9 +6,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.config import get_settings
-from app.db.models import Base
-from app.db.session import get_engine
-from app.routers import articles, health, mps, ping, politicians, sittings
+from app.db.session import ensure_schema
+from app.routers import acts, articles, health, mps, ping, politicians, sittings
 from app.services import articles as articles_service
 from app.services import mp_votes as mp_votes_service
 
@@ -17,10 +16,8 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    # No migrations yet: create missing tables on startup. Replace with alembic once the schema settles.
     try:
-        async with get_engine().begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        await ensure_schema()
     except Exception:
         logger.exception("Could not create database tables")
     # Load the embedding model in the background so the first article search does not wait for it.
@@ -48,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(ping.router, prefix="/api")
     app.include_router(politicians.router)
     app.include_router(sittings.router)
+    app.include_router(acts.router)
     app.include_router(articles.router)
     app.include_router(mps.router)
     return app

@@ -18,11 +18,15 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3.7-flash"
 
     sejm_api_url: str = "https://api.sejm.gov.pl/sejm"
+    # PDFs of acts downloaded by scripts.ingest_acts (gitignored, survives via the bind mount).
+    acts_data_dir: str = "data/acts"
+    # Copies of Sejm API data (MP list, photos) for its outages; gitignored, survives via the bind mount.
+    sejm_cache_dir: str = "data/sejm"
 
     embedding_model: str = "BAAI/bge-m3"  # multilingual (Polish), 8192-token context
-    # POST /api/v1/articles/search: how many articles and the minimum cosine similarity to return
-    search_top_k: int = 3
-    search_min_score: float = 0.4
+    # POST /api/v1/articles/search: minimum cosine similarity for a semantic hit. With bge-m3 an unrelated
+    # query scores up to ~0.37 and clearly related articles 0.5+; recheck after changing what is embedded.
+    search_min_score: float = 0.5
 
     @property
     def is_local(self) -> bool:

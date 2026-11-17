@@ -95,7 +95,7 @@ def test_list_row_shape(client):
         "district_number": 13,
         "district_name": "Kraków",
         "active": True,
-        "photo_url": "https://api.sejm.gov.pl/sejm/term10/MP/2/photo",
+        "photo_url": "http://testserver/api/v1/politicians/2/photo",  # our proxy, not the Sejm API
     }
 
 

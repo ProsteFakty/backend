@@ -20,11 +20,14 @@ def slugify(text: str) -> str:
 
 
 def normalize_article_number(raw: str) -> str:
-    """'Art. 178a' -> '178a', 'art. 26¹' / '26^1' / '26(1)' -> '26^1'."""
+    """'Art. 178a' -> '178a', 'art. 26¹' / '26^1' / '26(1)' / '26[1]' -> '26^1', '22[1a]' (as pypdf prints
+    superscripts from Sejm PDFs) -> '22^1a'."""
     number = _ARTICLE_PREFIX.sub("", raw).strip().lower().replace(" ", "")
     if match := re.fullmatch(r"(\d+[a-z]*)([⁰¹²³⁴⁵⁶⁷⁸⁹]+)", number):
         return f"{match[1]}^{match[2].translate(_SUPERSCRIPTS)}"
     if match := re.fullmatch(r"(\d+[a-z]*)\((\d+)\)", number):
+        return f"{match[1]}^{match[2]}"
+    if match := re.fullmatch(r"(\d+[a-z]*)\[(\d+[a-z]*)\]", number):
         return f"{match[1]}^{match[2]}"
     return number
 

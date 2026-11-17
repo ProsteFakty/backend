@@ -81,7 +81,7 @@ class MpProfile(Politician):
                     "email": "Maria.Janyska@sejm.pl",
                     "number_of_votes": 23592,
                     "active": True,
-                    "photo_url": "https://api.sejm.gov.pl/sejm/term10/MP/140/photo",
+                    "photo_url": "https://api.example.com/api/v1/politicians/140/photo",
                     "profile_url": "https://www.sejm.gov.pl/Sejm10.nsf/posel.xsp?id=140&type=A",
                     "gender": "female",
                     "club_label": "KO",

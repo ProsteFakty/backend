@@ -221,3 +221,6 @@ __marimo__/
 
 # Face recognition ONNX models (downloaded on first use)
 models/
+
+# Act PDFs downloaded by scripts/ingest_acts.py
+data/

@@ -1,7 +1,7 @@
 import math
 
 import httpx
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
@@ -15,6 +15,7 @@ from app.services.politicians import (
     PoliticianSummary,
     clubs_with_counts,
     filter_politicians,
+    get_photo,
     get_politician,
     search_faces,
     search_politicians,
@@ -67,7 +68,7 @@ class RecognizeResponse(BaseModel):
                                 "email": "Andrzej.Adamczyk@sejm.pl",
                                 "number_of_votes": 45171,
                                 "active": True,
-                                "photo_url": "https://api.sejm.gov.pl/sejm/term10/MP/1/photo",
+                                "photo_url": "http://localhost:8000/api/v1/politicians/1/photo",
                                 "profile_url": "https://www.sejm.gov.pl/Sejm10.nsf/posel.xsp?id=001&type=A",
                             },
                         },
@@ -87,8 +88,19 @@ SEJM_DOWN = {502: {"model": ErrorResponse, "description": "Sejm API unavailable 
 INCLUDE_INACTIVE = Query(False, description="Also list MPs whose mandate expired during the term.")
 
 
+def _with_photo_url(request: Request, politician: Politician) -> Politician:
+    """Absolute URL of our photo proxy, whatever is stored (old face-index entries still hold Sejm API URLs).
+
+    Every endpoint that returns an MP goes through this: Android does not trust the certificate of
+    api.sejm.gov.pl, so the app must never be handed a photo URL on that host.
+    """
+    url = str(request.url_for("politician_photo", mp_id=politician.mp_id))
+    return politician.model_copy(update={"photo_url": url})
+
+
 @router.get("", summary="List MPs (Szukaj posła)", responses=SEJM_DOWN)
 def list_mps(
+    request: Request,
     q: str | None = Query(
         None, max_length=100, description="Name fragment(s), e.g. `a`, `kowal jan`. Polish characters optional."
     ),
@@ -108,7 +120,7 @@ def list_mps(
         raise HTTPException(502, "Sejm API is unavailable") from exc
     start = (page - 1) * page_size
     return Page(
-        items=[to_list_item(p) for p in mps[start : start + page_size]],
+        items=[to_list_item(_with_photo_url(request, p)) for p in mps[start : start + page_size]],
         page=page,
         page_size=page_size,
         total=len(mps),
@@ -129,8 +141,9 @@ def clubs(include_inactive: bool = INCLUDE_INACTIVE) -> list[ClubOut]:
         raise HTTPException(502, "Sejm API is unavailable") from exc
 
 
-@router.get("/search", summary="Search MPs by name")
+@router.get("/search", summary="Search MPs by name", responses=SEJM_DOWN)
 def search(
+    request: Request,
     q: str = Query(min_length=2, description="Name fragment(s), e.g. `adam`, `kowal jan`. Polish characters optional."),
     limit: int = Query(20, ge=1, le=100),
 ) -> list[PoliticianSummary]:
@@ -138,7 +151,11 @@ def search(
 
     Open a result with `GET /api/v1/politicians/{mp_id}`.
     """
-    return [PoliticianSummary(**p.model_dump()) for p in search_politicians(q, limit)]
+    try:
+        politicians = search_politicians(q, limit)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Sejm API is unavailable") from exc
+    return [PoliticianSummary(**_with_photo_url(request, p).model_dump()) for p in politicians]
 
 
 @router.get(
@@ -146,7 +163,7 @@ def search(
     summary="MP profile",
     responses={404: {"model": ErrorResponse, "description": "No MP with this id in the current term."}, **SEJM_DOWN},
 )
-def profile(mp_id: int) -> MpProfile:
+def profile(request: Request, mp_id: int) -> MpProfile:
     """Data for the "Profil posła" screen.
 
     Returns every field of `Politician` (the same object as in the camera scan) plus:
@@ -171,7 +188,29 @@ def profile(mp_id: int) -> MpProfile:
         raise HTTPException(502, "Sejm API is unavailable") from exc
     if politician is None:
         raise HTTPException(404, "MP not found")
-    return build_profile(politician)
+    return build_profile(_with_photo_url(request, politician))
+
+
+@router.get(
+    "/{mp_id}/photo",
+    name="politician_photo",
+    summary="Official MP photo (JPEG)",
+    response_class=Response,
+    responses={
+        200: {"content": {"image/jpeg": {}}, "description": "JPEG, about 110×137 px"},
+        404: {"model": ErrorResponse, "description": "No photo for this id in the Sejm API."},
+        **SEJM_DOWN,
+    },
+)
+def photo(mp_id: int) -> Response:
+    """Proxied from the Sejm API (which Android does not trust) and cached on our disk."""
+    try:
+        data = get_photo(mp_id)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Sejm API is unavailable") from exc
+    if data is None:
+        raise HTTPException(404, "Photo not found")
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=604800"})
 
 
 @router.post(
@@ -183,6 +222,7 @@ def profile(mp_id: int) -> MpProfile:
     },
 )
 def recognize(
+    request: Request,
     photo: UploadFile = File(description="Photo from the phone camera (JPEG/PNG/WebP, max 10 MB)."),
 ) -> RecognizeResponse:
     """Detect faces in the photo and match each against MPs of the current Sejm term.
@@ -205,7 +245,7 @@ def recognize(
         faces.append(
             RecognizedFace(
                 box=face.box,
-                politician=best.politician if matched else None,
+                politician=_with_photo_url(request, best.politician) if matched else None,
                 similarity=best.similarity if best else None,
             )
         )
