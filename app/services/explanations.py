@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from google.genai import errors
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -30,7 +31,7 @@ from app.schemas.articles import (
     MissingReference,
     TextSpan,
 )
-from app.utils.gemini_client import get_gemini_client
+from app.utils.gemini_client import GeminiError, get_gemini_client
 from app.utils.gemini_client.tasks import Source, explain_article
 
 MAX_DEPTH = 2
@@ -148,7 +149,14 @@ async def _cached_or_generated(
         return row, True
     sources = _sources(entries)
     slug_of = {s.id: e.article.slug for s, e in zip(sources, entries, strict=True)}
-    points = await explain_article(get_gemini_client(), sources, [m.text for m in missing])
+    try:
+        # Without a limit a stalled model would keep the app's request (and the per-article lock) open for minutes.
+        async with asyncio.timeout(get_settings().explanation_timeout_seconds):
+            points = await explain_article(get_gemini_client(), sources, [m.text for m in missing])
+    except TimeoutError as exc:
+        raise GeminiError(f"no answer from {model} in {get_settings().explanation_timeout_seconds:.0f} s") from exc
+    except errors.APIError as exc:  # still refused after the retries: quota used up, overloaded, wrong model name
+        raise GeminiError(f"{model} answered {exc.code}") from exc
     stored = [
         {"text": p.text, "citations": [{"slug": slug_of[c.source], "quote": c.quote} for c in p.citations]}
         for p in points

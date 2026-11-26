@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     # SFace cosine similarity; 0.363 is the threshold recommended by the model authors.
     face_match_threshold: float = 0.363
     gemini_model: str = "gemini-3.7-flash"
+    # GET /articles/{slug}/explanation gives up (503) after this long; the app can then offer a retry.
+    explanation_timeout_seconds: float = 60
 
     sejm_api_url: str = "https://api.sejm.gov.pl/sejm"
     # PDFs of acts downloaded by scripts.ingest_acts (gitignored, survives via the bind mount).
