@@ -1,12 +1,18 @@
+import asyncio
 import math
+from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.db.session import get_session
 from app.schemas.sittings import Page
 from app.services.faces import decode_image, get_engine
+from app.services import mp_news
+from app.services.mp_news import MpNews
 from app.services.mp_profile import MpProfile, build_profile
 from app.services.politicians import (
     ClubOut,
@@ -189,6 +195,33 @@ def profile(request: Request, mp_id: int) -> MpProfile:
     if politician is None:
         raise HTTPException(404, "MP not found")
     return build_profile(_with_photo_url(request, politician))
+
+
+@router.get(
+    "/{mp_id}/news",
+    summary="Recent press coverage of an MP (Ostatnio w mediach)",
+    responses={404: {"model": ErrorResponse, "description": "No MP with this id in the current term."}, **SEJM_DOWN},
+)
+async def news(mp_id: int, session: Annotated[AsyncSession, Depends(get_session)]) -> MpNews:
+    """Up to 5 news items about the MP from the last 30 days, newest first: Claude summarises web search
+    results (tabloids included), every item linked to its sources. Load it separately from the profile.
+
+    - `status`: `ok` / `empty` (nothing found) / `unavailable` (not fetched yet or the provider is down);
+      FE hides the section unless `ok`
+    - `disclaimer`: show it small under the section
+
+    Results are kept for 24 h. The first request for an MP waits for Claude (usually 10-30 s, up to 90 s);
+    later ones are instant, an expired result is still served while a new one is fetched in the background.
+    Provider failures and the monthly Claude budget running out never turn into an error status.
+    """
+    try:
+        subject = await asyncio.to_thread(mp_news.news_subject, mp_id)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Sejm API is unavailable") from exc
+    if subject is None:
+        raise HTTPException(404, "MP not found")
+    politician, club = subject
+    return await mp_news.get_mp_news(session, politician, club)
 
 
 @router.get(

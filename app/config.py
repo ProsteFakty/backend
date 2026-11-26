@@ -28,6 +28,21 @@ class Settings(BaseSettings):
     # query scores up to ~0.37 and clearly related articles 0.5+; recheck after changing what is embedded.
     search_min_score: float = 0.5
 
+    # GET /api/v1/politicians/{mp_id}/news (docs/specs/mp-media-news.md)
+    mp_news_ttl_hours: float = 24
+    mp_news_retry_minutes: float = 60  # no new Claude call for an MP this long after a failed one
+    mp_news_timeout_seconds: float = 90  # whole fetch incl. retries; the first view of an MP waits for it
+    mp_news_model: str = "claude-haiku-5-5"
+    mp_news_effort: Literal["low", "medium", "high"] = "low"
+    mp_news_max_searches: int = 3  # web searches per fetch; each costs claude_web_search_usd
+    # Never searched, and sources from these domains (and subdomains) are dropped.
+    mp_news_blocked_domains: list[str] = []
+
+    anthropic_api_key: str = ""
+    # Hard cap on Claude spending per calendar month (UTC), tracked in the llm_usage table.
+    claude_monthly_budget_usd: float = 5.0
+    claude_web_search_usd: float = 0.01  # $10 per 1000 searches
+
     @property
     def is_local(self) -> bool:
         return self.app_env == "local"

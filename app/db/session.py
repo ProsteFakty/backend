@@ -56,3 +56,13 @@ async def ensure_schema() -> None:
             await conn.execute(
                 text("CREATE INDEX IF NOT EXISTS ix_articles_search_vector ON articles USING gin (search_vector)")
             )
+        # mp_news tables created before the takedown flag existed.
+        mp_news_columns = set(
+            (
+                await conn.execute(
+                    text("SELECT column_name FROM information_schema.columns WHERE table_name = 'mp_news'")
+                )
+            ).scalars()
+        )
+        if "blocked" not in mp_news_columns:
+            await conn.execute(text("ALTER TABLE mp_news ADD COLUMN blocked boolean NOT NULL DEFAULT false"))
