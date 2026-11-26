@@ -67,6 +67,13 @@
 
 `GET /api/v1/politicians/{mp_id}` → ten sam obiekt co `politician` wyżej; 404 gdy brak posła.
 
+### Ostatnio w mediach
+
+`GET /api/v1/politicians/{mp_id}/news` → do 5 doniesień z ostatnich 30 dni (`items`: `headline`, `summary`,
+`date`, `category`, `sources[{url, domain, title}]`). Ładować osobno od profilu: pierwsze wejście na posła
+może trwać 10–90 s, potem natychmiast. Sekcję pokazywać tylko gdy `status == "ok"`; pod nią `disclaimer`.
+Szczegóły: `docs/specs/mp-media-news.md`.
+
 ### Błędy
 
 | Kod | Kiedy |
