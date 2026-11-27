@@ -16,10 +16,13 @@ Ids map to `spec.md` requirements.
 ## Phase 1 — CI
 
 - [~] **T1 — `ci.yml` with `test` job** (R1.1, R1.2, R1.3, R1.7, R1.8, R1.9)
+  PR #13: `test` green, 1m26s cold cache. Pending: cancel-on-new-push check.
   **Done:** PR on `ci-cd` shows `test` green; second push cancels first run; warm-cache run ≤ 5 min.
-- [~] **T3 — Compose validation** (R1.5)
+- [x] **T3 — Compose validation** (R1.5)
+  PR #13: green, 13 s.
   `compose-config` job. **Done:** green; broken YAML in a scratch commit → red.
 - [~] **T4 — Conditional docker build** (R1.6)
+  PR #13: ran (requirements.txt changed via bdb8fea), green, 2m34s. Pending: a PR with no dependency change → skipped.
   `changes` job (paths-filter) + `docker-build` (no push, GHA cache). **Done:** acceptance #2 both cases.
 - [~] **T5 — Pin actions + Dependabot** (R4.2, R4.3)
   Replace tags with SHAs (`# vX.Y.Z` comment). Add `.github/dependabot.yml`. **Done:** Dependabot tab shows 3 ecosystems.
@@ -32,7 +35,8 @@ Ids map to `spec.md` requirements.
 - [ ] **T-infra-2 — OIDC provider + deploy role** (R2.4, R2.5)
   Trust `sub = repo:ProsteFakty/backend:environment:production`; least-privilege SSM policy (see design).
   **Done:** role ARN known; document in `context/docs/deploy.md`.
-- [ ] **T-infra-3 — GitHub Environment `production`** (R2.5, Q1)
+- [~] **T-infra-3 — GitHub Environment `production`** (R2.5, Q1)
+  Created 2026-11-27 with deployment branch rule `main`, no reviewers. Pending: variable values (from T-infra-1/2).
   Vars: `AWS_ROLE_ARN`, `AWS_REGION`, `EC2_INSTANCE_ID`, `DEPLOY_DIR`, `DEPLOY_USER`.
   Deployment branch rule: `main` only. Required reviewers: none (Q1).
 
@@ -53,7 +57,8 @@ Ids map to `spec.md` requirements.
 
 ## Phase 4 — Lock down + docs
 
-- [ ] **T9 — Branch protection** (R4.1)
+- [x] **T9 — Branch protection** (R4.1)
+  Set 2026-11-27: PR required (0 approvals), checks `test` + `compose-config`, strict, admins can bypass.
   Required checks: `test`, `compose-config`. Require PR, require branch up to date.
   **Done:** acceptance #1.
 - [~] **T10 — README** (R3.3)
