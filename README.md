@@ -93,11 +93,22 @@ docker compose exec backend python -m scripts.index_articles                  # 
 
 Same compose, without `docker-compose.local.yml`. The server's `.env` has `APP_ENV=prod` and no `COMPOSE_FILE` line, so Swagger, ReDoc and `/openapi.json` are disabled.
 
-Code is bind-mounted from the git checkout, so there's no image registry. Deploy:
+Code is bind-mounted from the git checkout, so there's no image registry.
 
-```bash
-./deploy.sh   # git pull + restart backend; rebuild only when requirements/Dockerfile/compose change
-```
+## CI/CD (GitHub Actions)
+
+- **CI** (`.github/workflows/ci.yml`), on every PR and push to `main`: `pytest` (Python 3.13), `docker compose config`
+  check, and a docker build when `Dockerfile` or `requirements*.txt` change. Nothing is pushed anywhere.
+- **Deploy** (`.github/workflows/deploy.yml`): after CI passes on `main`, GitHub assumes an AWS role (OIDC, no stored
+  keys) and runs `deploy.sh <sha>` on the EC2 box through SSM, then checks `/api/ping` on the box (≤ 180 s). The job
+  summary shows the commit, what was restarted or rebuilt, and the health result. Auto-deploy is on only while the
+  repository variable `AUTO_DEPLOY` is `true`.
+- **Rollback**: Actions → `deploy` → Run workflow → `ref` = an older commit SHA from `main`.
+- **By hand on the server**: `./deploy.sh` (latest `main`) or `./deploy.sh <sha>`. It leaves a detached HEAD, so
+  don't `git pull`. It refuses to run if tracked files have local changes, and rebuilds only when
+  requirements/Dockerfile/compose change (otherwise it restarts the backend).
+
+Setup and decisions: `plan/ci-cd/`.
 
 Backups: `db/dump.sh` (cron) → S3.
 
