@@ -1,0 +1,138 @@
+name: deploy
+
+# Deploys one commit to the EC2 server: GitHub OIDC -> IAM role -> SSM Run Command -> deploy.sh <sha>,
+# then checks /api/ping on the server itself. No AWS keys or SSH keys are stored in GitHub.
+#
+# Called by ci.yml after CI passes on main (input sha), or run by hand from the Actions tab
+# (input ref: a branch or a commit SHA; an older SHA = rollback). Only commits on origin/main can be deployed:
+# deploy.sh fetches main and refuses anything it can't find there.
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: Commit to deploy
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or commit SHA to deploy (an older SHA rolls back)
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+      DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+    steps:
+      - name: Check configuration
+        run: |
+          for v in AWS_REGION INSTANCE_ID DEPLOY_DIR DEPLOY_USER; do
+            [ -n "${!v}" ] || { echo "::error::environment variable $v is not set in the 'production' environment"; exit 1; }
+          done
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha || inputs.ref }}
+          fetch-depth: 0
+
+      - name: Resolve commit
+        id: commit
+        run: |
+          sha=$(git rev-parse HEAD)
+          if ! git merge-base --is-ancestor "$sha" origin/main; then
+            echo "::error::$sha is not on main; only commits on main can be deployed"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Deploying $sha"
+
+      - uses: aws-actions/configure-aws-credentials@45666896f5d8e0f10ae255413f3a4cdd03bdc8f5 # v6.3.1
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Run deploy.sh on the server
+        id: ssm
+        env:
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          # Every value is validated or quoted before it goes into the remote script.
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad sha"; exit 1; }
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "::error::bad DEPLOY_USER"; exit 1; }
+          [[ "$DEPLOY_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "::error::bad DEPLOY_DIR"; exit 1; }
+
+          script=$(cat <<EOF
+          set -e
+          cd '$DEPLOY_DIR'
+          sudo -H -u '$DEPLOY_USER' ./deploy.sh '$SHA'
+          i=0
+          while [ \$i -lt 36 ]; do
+            if curl -fsS -o /dev/null --max-time 5 http://localhost/api/ping; then echo "health: ok"; exit 0; fi
+            i=\$((i+1)); sleep 5
+          done
+          echo "health: FAILED (/api/ping not 200 after 180 s)"
+          exit 1
+          EOF
+          )
+          params=$(jq -n --arg s "$script" '{commands: ($s | split("\n"))}')
+
+          command_id=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy ${SHA:0:12} (run $GITHUB_RUN_ID)" \
+            --timeout-seconds 900 \
+            --parameters "$params" \
+            --query Command.CommandId --output text)
+          echo "SSM command: $command_id"
+
+          # aws ssm wait gives up after ~100 s; a rebuild takes longer, so poll up to 15 min.
+          status=Pending
+          for _ in $(seq 180); do
+            sleep 5
+            status=$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            case "$status" in Pending|InProgress|Delayed) continue ;; *) break ;; esac
+          done
+
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query StandardOutputContent --output text > out.txt || true
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query StandardErrorContent --output text > err.txt || true
+          echo "::group::server stdout"; cat out.txt; echo "::endgroup::"
+          echo "::group::server stderr"; cat err.txt; echo "::endgroup::"
+
+          change=$(grep -m1 '^deploy:' out.txt | sed 's/^deploy: //' || true)
+          action=$(grep '^action:' out.txt | sed 's/^action: //' | paste -sd ';' - || true)
+          health=$(grep -m1 '^health:' out.txt | sed 's/^health: //' || true)
+          {
+            echo "## Deploy ${SHA:0:12}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| commit | \`$SHA\` |"
+            echo "| change | ${change:-?} |"
+            echo "| action | ${action:-?} |"
+            echo "| health | ${health:-not reached} |"
+            echo "| SSM status | $status |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$status" != Success ]; then
+            echo "::error::deploy failed (SSM status: $status), see server stdout/stderr above"
+            exit 1
+          fi
