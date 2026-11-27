@@ -29,14 +29,19 @@ Ids map to `spec.md` requirements.
 
 ## Phase 2 — Infra (out of repo, needs AWS console / `context` repo)
 
-- [ ] **T-infra-1 — SSM on EC2** (R2.4, Q2)
+- [~] **T-infra-1 — SSM on EC2** (R2.4, Q2)
+  Instance `i-02985ea133ea8d6ee` (eu-central-1, Ubuntu 24.04 arm64). 2026-11-27: attached `AmazonSSMManagedInstanceCore`
+  to role `prostefakty-ec2`. Not registered after 15 min → on the box: `sudo snap restart amazon-ssm-agent`.
   Check `aws ssm describe-instance-information` lists the instance as `Online`; else attach
   `AmazonSSMManagedInstanceCore` to the instance profile, ensure `snap.amazon-ssm-agent` running.
-- [ ] **T-infra-2 — OIDC provider + deploy role** (R2.4, R2.5)
+- [x] **T-infra-2 — OIDC provider + deploy role** (R2.4, R2.5)
+  2026-11-27: OIDC provider created; role `arn:aws:iam::782083514983:role/gh-backend-deploy`, inline policy `ssm-deploy`
+  (SendCommand on the instance + AWS-RunShellScript only). Pending: note in `context/docs/deploy.md`.
   Trust `sub = repo:ProsteFakty/backend:environment:production`; least-privilege SSM policy (see design).
   **Done:** role ARN known; document in `context/docs/deploy.md`.
 - [~] **T-infra-3 — GitHub Environment `production`** (R2.5, Q1)
-  Created 2026-11-27 with deployment branch rule `main`, no reviewers. Pending: variable values (from T-infra-1/2).
+  Created 2026-11-27 with deployment branch rule `main`, no reviewers. Set: `AWS_ROLE_ARN`, `AWS_REGION`, `EC2_INSTANCE_ID`.
+  Pending: `DEPLOY_DIR`, `DEPLOY_USER` (checkout path + its owner on the server).
   Vars: `AWS_ROLE_ARN`, `AWS_REGION`, `EC2_INSTANCE_ID`, `DEPLOY_DIR`, `DEPLOY_USER`.
   Deployment branch rule: `main` only. Required reviewers: none (Q1).
 
